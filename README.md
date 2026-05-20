@@ -1,32 +1,133 @@
 # credit-keeper
 
-> Proxy giữ "credit" cho từng request: viết lại header HTTP/HTTPS theo file YAML.
-> A header-keeping HTTP/HTTPS proxy that rewrites request and response headers from a YAML config.
+> Proxy HTTP/HTTPS viết lại header theo file YAML.
+> A header-rewriting HTTP/HTTPS proxy driven by a YAML config.
 
-## What it does
+`credit-keeper` là một CLI Python nhỏ, dùng [mitmproxy](https://mitmproxy.org/)
+như một thư viện. Bạn khai báo các quy tắc (rule) trong file YAML; công cụ sẽ
+chạy một proxy HTTP/HTTPS và sửa header trên request hoặc response khi traffic
+đi qua. Mỗi rule có thể lọc theo host (glob hoặc regex), URL regex, HTTP method,
+sau đó `set`, `add`, `remove`, hoặc `replace` (regex) header.
 
-`credit-keeper` is a small Python CLI built on top of [mitmproxy](https://mitmproxy.org/)
-as a library. You declare rules in YAML; it runs an HTTP/HTTPS proxy that mutates
-request and response headers as traffic flows through. Each rule can target
-traffic by host (glob or regex), URL regex, and HTTP method, then `set`, `add`,
-`remove`, or regex-`replace` headers on requests, responses, or both.
+## Cài đặt / Installation
 
-## Status
+Yêu cầu: Python 3.11 trở lên và [`uv`](https://docs.astral.sh/uv/).
 
-Header rules engine complete, mitmproxy integration in next feature.
+```bash
+# Cài uv nếu chưa có:
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
 
-This first slice ships:
+# Đồng bộ môi trường (tạo .venv và cài deps):
+uv sync --python 3.12
 
-- the typed config model (`Config`, `Rule`, `HeaderOp`) and a YAML loader with
-  validation that fails loudly with the offending rule's name,
-- a pure-Python rule matcher and header mutator that works against either a
-  mitmproxy `Headers` object or the bundled `CaseInsensitiveHeaders` helper,
-- a pytest suite covering matching, every header action, and config validation,
-- an annotated example config at `examples/headers.example.yaml`.
+# Có dev deps để chạy test:
+uv sync --python 3.12 --extra dev
+```
 
-The CLI entry point and the mitmproxy addon land in the next feature.
+Sau khi `uv sync`, lệnh `credit-keeper` sẵn sàng dưới `uv run`:
 
-## Quick start (dev)
+```bash
+uv run --python 3.12 credit-keeper --help
+```
+
+## Quick start
+
+1. Tạo file config, ví dụ `headers.yaml`:
+
+   ```yaml
+   rules:
+     - name: stamp-ua
+       host: "*.example.com"
+       request:
+         - {action: set, name: User-Agent, value: "credit-keeper/0.1"}
+         - {action: add, name: X-Forwarded-For, value: "10.0.0.1"}
+
+     - name: drop-server
+       response:
+         - {action: remove, name: Server}
+   ```
+
+2. Chạy proxy:
+
+   ```bash
+   uv run --python 3.12 credit-keeper -c headers.yaml
+   # credit-keeper listening on 127.0.0.1:8080, loaded 2 rules from headers.yaml
+   ```
+
+3. Trỏ trình duyệt hoặc hệ thống sang proxy `127.0.0.1:8080` (hoặc dùng
+   `curl -x http://127.0.0.1:8080 ...`).
+
+4. Đối với HTTPS, cài CA cert của mitmproxy: trong khi đã trỏ qua proxy, mở
+   trình duyệt vào [http://mitm.it](http://mitm.it) và làm theo hướng dẫn cho
+   hệ điều hành của bạn. Nếu chỉ test bằng `curl`, có thể bỏ qua bằng
+   `--ssl-insecure` ở phía proxy và `-k` ở `curl`.
+
+CLI options:
+
+| Flag                        | Default       | Mô tả |
+|-----------------------------|---------------|-------|
+| `-c`, `--config PATH`       | (bắt buộc)    | File YAML chứa các rule. |
+| `--listen-host HOST`        | `127.0.0.1`   | Địa chỉ bind proxy. |
+| `-p`, `--listen-port PORT`  | `8080`        | Cổng nghe. |
+| `--mode MODE`               | `regular`     | mitmproxy proxy mode (regular, transparent, socks5, reverse:..., upstream:...). |
+| `--ssl-insecure`            | tắt           | Không verify TLS upstream. |
+| `--version`                 |               | In phiên bản và thoát. |
+
+Bạn cũng có thể chạy bằng `python -m credit_keeper -c headers.yaml`.
+
+## Config reference
+
+File config là một YAML mapping với một key duy nhất ở cấp cao nhất, `rules`,
+chứa danh sách các rule. Các filter trong cùng một rule được kết hợp bằng AND.
+
+### Rule fields
+
+| Field        | Type                                        | Default     | Mô tả |
+|--------------|---------------------------------------------|-------------|-------|
+| `name`       | string (required)                           | -           | Tên gợi nhớ; xuất hiện trong thông báo lỗi. |
+| `host`       | string                                      | none        | `fnmatch` glob, không phân biệt hoa thường. Ví dụ: `*.api.example.com`. |
+| `host_regex` | string                                      | none        | Python regex áp lên host bằng `re.search`. |
+| `url_regex`  | string                                      | none        | Python regex áp lên full URL bằng `re.search`. |
+| `methods`    | list of strings                             | none        | Danh sách HTTP method (không phân biệt hoa thường). |
+| `apply_to`   | `"request"` \| `"response"` \| `"both"`     | xem dưới    | Hướng nào rule sẽ chạy. |
+| `request`    | list of header ops                          | `[]`        | Op áp dụng trên request đi ra. |
+| `response`   | list of header ops                          | `[]`        | Op áp dụng trên response đi vào. |
+
+`apply_to` mặc định là `"request"`. Nếu bạn bỏ trống và rule chỉ có `response`
+ops, nó tự chuyển sang `"response"`. Nếu cả `request` lẫn `response` đều có
+ops, nó tự chuyển sang `"both"`.
+
+### HeaderOp actions
+
+| Action     | Required fields           | Ví dụ |
+|------------|---------------------------|-------|
+| `set`      | `name`, `value`           | `{action: set, name: User-Agent, value: "credit-keeper/0.1"}` |
+| `add`      | `name`, `value`           | `{action: add, name: X-Forwarded-For, value: "10.0.0.1"}` |
+| `remove`   | `name`                    | `{action: remove, name: Server}` |
+| `replace`  | `name`, `pattern`, `value`| `{action: replace, name: Authorization, pattern: "Bearer (.*)", value: "Bearer redacted-\\1"}` |
+
+Ngữ nghĩa các action:
+
+- `set` ghi đè toàn bộ giá trị hiện có của header bằng một giá trị mới.
+- `add` thêm một giá trị nữa, giữ nguyên các giá trị hiện có.
+- `remove` xoá header nếu có; không lỗi khi header chưa tồn tại.
+- `replace` chạy `re.sub(pattern, value, current_value)` cho từng giá trị hiện
+  có của header. Backref kiểu `\1` trong `value` hoạt động bình thường.
+
+Xem `examples/headers.example.yaml` để có một config mẫu đầy đủ chú thích.
+
+## Why mitmproxy
+
+`credit-keeper` được xây dựng trên mitmproxy vì đây là thư viện proxy Python
+hỗ trợ HTTPS phổ biến và ổn định nhất hiện nay. mitmproxy cung cấp một addon
+API rất đơn giản (mỗi addon là một class Python với các hook như `request`,
+`response`), can thiệp được cả request lẫn response trong cùng một nơi, và
+xử lý sẵn các phần khó như TLS interception, cấp CA cert, parse HTTP/2.
+Nhờ vậy `credit-keeper` chỉ tập trung vào việc khớp rule và sửa header,
+không phải dựng lại tầng mạng.
+
+## Development
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
@@ -34,45 +135,39 @@ uv sync --python 3.12 --extra dev
 uv run --python 3.12 pytest -q
 ```
 
-## Config schema
+Smoke-test CLI:
 
-A config file is a YAML mapping with a single top-level key, `rules`, holding
-a list of rules. Each rule has optional filters (combined with AND) and lists
-of header operations.
+```bash
+uv run --python 3.12 credit-keeper --help
+uv run --python 3.12 credit-keeper -c examples/headers.example.yaml -p 18080
+# trong shell khác:
+curl -x http://127.0.0.1:18080 -s -o /dev/null -w "%{http_code}\n" http://example.com
+```
 
-### Rule
+Test addon dùng `mitmproxy.test.tflow` để dựng `HTTPFlow` giả nên không cần
+khởi động proxy thật.
 
-| Field        | Type                                        | Default     | Description |
-|--------------|---------------------------------------------|-------------|-------------|
-| `name`       | string (required)                           | -           | Human-readable identifier; surfaced in error messages. |
-| `host`       | string                                      | none        | `fnmatch` glob, case-insensitive (e.g. `*.api.example.com`). |
-| `host_regex` | string                                      | none        | Python regex applied to the request host with `re.search`. |
-| `url_regex`  | string                                      | none        | Python regex applied to the full URL with `re.search`. |
-| `methods`    | list of strings                             | none        | HTTP methods to match (case-insensitive). |
-| `apply_to`   | `"request"` \| `"response"` \| `"both"`     | see below   | Which direction the rule fires on. |
-| `request`    | list of header ops                          | `[]`        | Ops applied on the outgoing request. |
-| `response`   | list of header ops                          | `[]`        | Ops applied on the incoming response. |
+## Project layout
 
-`apply_to` defaults to `"request"`. If you omit it and the rule only has
-`response` ops, it auto-flips to `"response"`. If both `request` and `response`
-ops are set, it auto-flips to `"both"`.
+```
+credit-keeper/
+├── pyproject.toml              # build / deps / console script
+├── README.md                   # tài liệu này
+├── examples/
+│   └── headers.example.yaml    # config mẫu có chú thích
+├── src/credit_keeper/
+│   ├── __init__.py             # public API: Config, Rule, HeaderOp, ...
+│   ├── __main__.py             # `python -m credit_keeper`
+│   ├── config.py               # dataclass + YAML loader + ConfigError
+│   ├── rules.py                # rule_matches, apply_ops, CaseInsensitiveHeaders
+│   ├── addon.py                # mitmproxy addon HeaderCustomizer
+│   └── cli.py                  # entry point `credit-keeper`
+└── tests/
+    ├── test_config.py
+    ├── test_rules.py
+    └── test_addon.py           # dùng mitmproxy.test.tflow
+```
 
-### HeaderOp
+## License
 
-| Field    | Type                                                        | Required for     | Description |
-|----------|-------------------------------------------------------------|------------------|-------------|
-| `action` | `"set"` \| `"add"` \| `"remove"` \| `"replace"`             | always           | What to do with the header. |
-| `name`   | string                                                      | always           | Header name (case-insensitive on match). |
-| `value`  | string                                                      | `set`, `add`, `replace` | New value, additional value, or replacement string (supports regex backrefs like `\1`). |
-| `pattern`| string (regex)                                              | `replace`        | Pattern matched against each existing value. |
-
-Action semantics:
-
-- `set` overwrites all existing values for that header with one new value.
-- `add` appends another value, keeping any existing ones.
-- `remove` deletes the header if present; missing header is a no-op.
-- `replace` runs `re.sub(pattern, value, current_value)` against every existing
-  value of the header. Backreferences in `value` work, e.g. `pattern: "Bearer (.*)"`,
-  `value: "Bearer redacted-\1"`.
-
-See `examples/headers.example.yaml` for a fully annotated sample.
+TBD.
