@@ -6,10 +6,14 @@ build-backend = "hatchling.build"
 name = "credit-keeper"
 version = "0.1.0"
 description = "Config-driven HTTP/HTTPS proxy that mutates headers, built on top of mitmproxy."
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "credit-keeper contributors"},
+]
 dependencies = [
-    "mitmproxy>=11,<13",
+    "mitmproxy>=12,<13",
     "pyyaml>=6",
 ]
 

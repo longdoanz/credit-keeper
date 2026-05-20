@@ -201,8 +201,10 @@ def test_addon_method_filter(tmp_path: Path) -> None:
     assert post_flow.request.headers["X-Method"] == "post"
 
 
-def test_addon_buggy_rule_does_not_crash(tmp_path: Path) -> None:
-    """A rule with an invalid regex should be logged, not raised."""
+def test_addon_rejects_bad_regex_at_load(tmp_path: Path) -> None:
+    """Bad regexes must be rejected at config-load time, not silently no-op."""
+    from credit_keeper.config import ConfigError
+
     cfg = _write_config(
         tmp_path,
         """
@@ -213,20 +215,11 @@ def test_addon_buggy_rule_does_not_crash(tmp_path: Path) -> None:
                 name: Authorization
                 pattern: "(unclosed"
                 value: "x"
-          - name: good-rule
-            response:
-              - {action: set, name: X-Ok, value: "1"}
         """,
     )
-    addon = HeaderCustomizer(config_path=cfg)
-    flow = _flow_for()
-    flow.response.headers["Authorization"] = "Bearer abc"
-
-    # Should not raise even though the first rule has a broken regex.
-    addon.response(flow)
-
-    # Subsequent good rule still applied.
-    assert flow.response.headers["X-Ok"] == "1"
+    with pytest.raises(ConfigError) as excinfo:
+        HeaderCustomizer(config_path=cfg)
+    assert "bad-regex" in str(excinfo.value)
 
 
 def test_cli_help_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
@@ -243,3 +236,190 @@ def test_cli_version_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as excinfo:
         cli_main(["--version"])
     assert excinfo.value.code == 0
+
+
+# ---------------------------------------------------------------------------
+# CLI failure modes (config errors must surface as clean error: messages).
+# ---------------------------------------------------------------------------
+
+
+def test_cli_missing_config_returns_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    missing = tmp_path / "does-not-exist.yaml"
+    rc = cli_main(["-c", str(missing)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "credit-keeper: error:" in err
+    assert "not found" in err
+    # No raw traceback.
+    assert "Traceback" not in err
+
+
+def test_cli_invalid_yaml_returns_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = tmp_path / "bad.yaml"
+    cfg.write_text("rules: [\n  - name: oops\n", encoding="utf-8")  # unterminated
+    rc = cli_main(["-c", str(cfg)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "credit-keeper: error:" in err
+    assert "Traceback" not in err
+
+
+def test_cli_config_error_returns_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _write_config(
+        tmp_path,
+        """
+        rules:
+          - name: bad-action
+            request:
+              - {action: nuke, name: X}
+        """,
+    )
+    rc = cli_main(["-c", str(cfg)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "credit-keeper: error:" in err
+    assert "bad-action" in err
+    assert "Traceback" not in err
+
+
+# ---------------------------------------------------------------------------
+# Defensive branches the previous suite missed.
+# ---------------------------------------------------------------------------
+
+
+def test_addon_response_hook_when_no_response(tmp_path: Path) -> None:
+    """A response hook on a flow without a response must be a no-op."""
+    cfg = _write_config(
+        tmp_path,
+        """
+        rules:
+          - name: drop-server
+            response:
+              - {action: remove, name: Server}
+        """,
+    )
+    addon = HeaderCustomizer(config_path=cfg)
+    flow = tflow.tflow(resp=False)
+    flow.request.host = "example.com"
+    flow.request.scheme = "http"
+    flow.request.path = "/"
+    assert flow.response is None
+
+    # Should not raise even though flow.response is None.
+    addon.response(flow)
+
+
+# ---------------------------------------------------------------------------
+# Script-addon path: load() registers the option, configure() reloads on it.
+# ---------------------------------------------------------------------------
+
+
+class _FakeLoader:
+    def __init__(self) -> None:
+        self.options: dict[str, dict[str, object]] = {}
+
+    def add_option(self, *, name: str, typespec: type, default: object, help: str) -> None:
+        self.options[name] = {"typespec": typespec, "default": default, "help": help}
+
+
+class _FakeOptions:
+    def __init__(self, **kwargs: object) -> None:
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+
+class _FakeMaster:
+    def __init__(self) -> None:
+        self.shutdown_called = False
+
+    def shutdown(self) -> None:
+        self.shutdown_called = True
+
+
+def test_addon_load_registers_config_option() -> None:
+    addon = HeaderCustomizer()
+    loader = _FakeLoader()
+    addon.load(loader)
+    assert "config" in loader.options
+    assert loader.options["config"]["typespec"] is str
+    assert loader.options["config"]["default"] == ""
+
+
+def test_addon_configure_reloads_from_ctx_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _write_config(
+        tmp_path,
+        """
+        rules:
+          - name: stamp
+            request:
+              - {action: set, name: X-Stamp, value: "1"}
+        """,
+    )
+    addon = HeaderCustomizer()
+    assert addon.config.rules == []
+
+    from credit_keeper import addon as addon_module
+
+    monkeypatch.setattr(
+        addon_module.ctx, "options", _FakeOptions(config=str(cfg)), raising=False
+    )
+    addon.configure({"config"})
+
+    assert addon.config_path == cfg
+    assert len(addon.config.rules) == 1
+    assert addon.config.rules[0].name == "stamp"
+
+
+def test_addon_configure_failure_shuts_master_down(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bad_cfg = tmp_path / "bad.yaml"
+    bad_cfg.write_text(
+        "rules:\n  - name: bad\n    request:\n      - {action: nuke, name: X}\n",
+        encoding="utf-8",
+    )
+    addon = HeaderCustomizer()
+
+    from credit_keeper import addon as addon_module
+
+    fake_master = _FakeMaster()
+    monkeypatch.setattr(
+        addon_module.ctx, "options", _FakeOptions(config=str(bad_cfg)), raising=False
+    )
+    monkeypatch.setattr(addon_module.ctx, "master", fake_master, raising=False)
+
+    addon.configure({"config"})
+
+    # Failed reload must fail loudly: master.shutdown() called, config not
+    # silently left at the previous (empty) value.
+    assert fake_master.shutdown_called is True
+    assert addon.config.rules == []
+
+
+def test_addon_running_prints_banner(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg = _write_config(
+        tmp_path,
+        """
+        rules:
+          - name: stamp
+            request:
+              - {action: set, name: X, value: "1"}
+        """,
+    )
+    addon = HeaderCustomizer(
+        config_path=cfg, listen_host="127.0.0.1", listen_port=18080
+    )
+    addon.running()
+    out = capsys.readouterr().out
+    assert "credit-keeper listening on 127.0.0.1:18080" in out
+    assert "1 rules" in out

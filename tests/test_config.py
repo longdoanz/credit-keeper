@@ -158,3 +158,60 @@ def test_example_config_loads() -> None:
     cfg = load_config(example)
     assert isinstance(cfg, Config)
     assert len(cfg.rules) >= 1
+
+
+def test_invalid_host_regex_raises_at_load(tmp_path: Path) -> None:
+    cfg_path = _write(
+        tmp_path,
+        """
+        rules:
+          - name: bad-host-regex
+            host_regex: "(unclosed"
+            request:
+              - {action: set, name: X, value: y}
+        """,
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(cfg_path)
+    msg = str(excinfo.value)
+    assert "bad-host-regex" in msg
+    assert "host_regex" in msg
+
+
+def test_invalid_url_regex_raises_at_load(tmp_path: Path) -> None:
+    cfg_path = _write(
+        tmp_path,
+        """
+        rules:
+          - name: bad-url-regex
+            url_regex: "[unclosed"
+            request:
+              - {action: set, name: X, value: y}
+        """,
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(cfg_path)
+    msg = str(excinfo.value)
+    assert "bad-url-regex" in msg
+    assert "url_regex" in msg
+
+
+def test_invalid_replace_pattern_raises_at_load(tmp_path: Path) -> None:
+    cfg_path = _write(
+        tmp_path,
+        """
+        rules:
+          - name: bad-replace-regex
+            response:
+              - action: replace
+                name: Authorization
+                pattern: "(unclosed"
+                value: "x"
+        """,
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(cfg_path)
+    msg = str(excinfo.value)
+    assert "bad-replace-regex" in msg
+    assert "invalid regex" in msg
+    assert "Authorization" in msg

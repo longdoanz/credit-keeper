@@ -22,9 +22,17 @@ class HeaderCustomizer:
     ``load`` and ``configure`` hooks.
     """
 
-    def __init__(self, config_path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        config_path: str | Path | None = None,
+        *,
+        listen_host: str | None = None,
+        listen_port: int | None = None,
+    ) -> None:
         self.config_path: Path | None = Path(config_path) if config_path else None
         self.config: Config = Config(rules=[])
+        self.listen_host = listen_host
+        self.listen_port = listen_port
         if self.config_path is not None:
             self._reload()
 
@@ -62,11 +70,33 @@ class HeaderCustomizer:
         new_path = Path(path)
         if self.config_path == new_path and self.config.rules:
             return
+        previous_path = self.config_path
         self.config_path = new_path
         try:
             self._reload()
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.error("credit-keeper: failed to load config %s: %s", new_path, exc)
+        except Exception as exc:
+            logger.error(
+                "credit-keeper: failed to load config %s: %s; shutting down",
+                new_path,
+                exc,
+            )
+            self.config_path = previous_path
+            master = getattr(ctx, "master", None)
+            if master is not None and hasattr(master, "shutdown"):
+                master.shutdown()
+            else:
+                # No master to shut down (e.g. during isolated tests); re-raise
+                # so the failure is surfaced rather than silently ignored.
+                raise
+
+    def running(self) -> None:
+        """Emit the startup banner once the proxy is actually bound."""
+        if self.listen_host is not None and self.listen_port is not None:
+            print(
+                f"credit-keeper listening on {self.listen_host}:{self.listen_port}, "
+                f"loaded {len(self.config.rules)} rules from {self.config_path}",
+                flush=True,
+            )
 
     # ------------------------------------------------------------------
     # Flow hooks

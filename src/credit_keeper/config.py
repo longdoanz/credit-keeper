@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 Action = Literal["set", "add", "remove", "replace"]
 ApplyTo = Literal["request", "response", "both"]
@@ -83,6 +87,13 @@ def _parse_op(rule_name: str, raw: Any) -> HeaderOp:
                 rule_name,
                 f"action 'replace' on header {name!r} requires 'value' (replacement string)",
             )
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise _fail(
+                rule_name,
+                f"invalid regex in 'replace' on header {name!r}: {pattern!r}: {exc}",
+            ) from exc
 
     return HeaderOp(action=action, name=name, value=value, pattern=pattern)
 
@@ -104,10 +115,26 @@ def _parse_rule(raw: Any, index: int) -> Rule:
     host_regex = raw.get("host_regex")
     if host_regex is not None and not isinstance(host_regex, str):
         raise _fail(name, "'host_regex' must be a string if provided")
+    if isinstance(host_regex, str):
+        try:
+            re.compile(host_regex)
+        except re.error as exc:
+            raise _fail(
+                name,
+                f"invalid 'host_regex' {host_regex!r}: {exc}",
+            ) from exc
 
     url_regex = raw.get("url_regex")
     if url_regex is not None and not isinstance(url_regex, str):
         raise _fail(name, "'url_regex' must be a string if provided")
+    if isinstance(url_regex, str):
+        try:
+            re.compile(url_regex)
+        except re.error as exc:
+            raise _fail(
+                name,
+                f"invalid 'url_regex' {url_regex!r}: {exc}",
+            ) from exc
 
     methods = raw.get("methods")
     if methods is not None:
@@ -134,6 +161,14 @@ def _parse_rule(raw: Any, index: int) -> Rule:
             apply_to = "both"
         else:
             apply_to = "request"
+        logger.info(
+            "credit-keeper: rule %r: inferred apply_to=%r from populated op lists "
+            "(request=%d, response=%d)",
+            name,
+            apply_to,
+            len(request_ops),
+            len(response_ops),
+        )
     else:
         if apply_to_raw not in _VALID_APPLY_TO:
             raise _fail(

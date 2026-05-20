@@ -11,7 +11,7 @@ sau đó `set`, `add`, `remove`, hoặc `replace` (regex) header.
 
 ## Cài đặt / Installation
 
-Yêu cầu: Python 3.11 trở lên và [`uv`](https://docs.astral.sh/uv/).
+Yêu cầu: Python 3.12 trở lên và [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
 # Cài uv nếu chưa có:
@@ -117,6 +117,36 @@ Ngữ nghĩa các action:
 
 Xem `examples/headers.example.yaml` để có một config mẫu đầy đủ chú thích.
 
+## Security
+
+`credit-keeper` chạy đè lên mitmproxy nên có khả năng MITM toàn bộ HTTPS đi qua
+nó. Vì vậy hãy đọc kỹ phần này trước khi dùng.
+
+- **CA cert lifecycle.** Để intercept HTTPS, bạn phải cài CA cert của mitmproxy
+  vào trust store. Cert này nằm ở `~/.mitmproxy/mitmproxy-ca-cert.pem`. Khi
+  cert đã được tin cậy, **bất kỳ tiến trình nào** chạy trên máy bạn và bind
+  vào `127.0.0.1:8080` (hoặc cổng khác đang chạy proxy) đều có thể giả mạo
+  bất kỳ HTTPS site nào. Khi xong việc, gỡ cert khỏi trust store và xoá thư
+  mục `~/.mitmproxy` nếu không cần lưu lại.
+- **`--ssl-insecure` semantics.** Cờ này chỉ tắt verify chứng chỉ phía
+  *upstream* (tức là proxy → server thật). Nó **không** giống `curl -k`.
+  Khi bật, proxy vẫn xuất CA của mitmproxy cho client, nhưng tự nó chấp
+  nhận mọi chứng chỉ từ server, kể cả giả mạo. Trên mạng không tin cậy,
+  bật cờ này có nghĩa là `Authorization` header bạn đang viết lại có thể
+  rơi vào tay kẻ tấn công đứng giữa.
+- **Listen-host risk.** Mặc định `--listen-host 127.0.0.1` chỉ cho phép truy
+  cập từ chính máy bạn. Đổi sang `0.0.0.0` (hoặc một interface LAN) sẽ biến
+  máy bạn thành một authless TLS-intercepting gateway cho cả mạng nội bộ:
+  bất kỳ ai chiếm được kết nối tới cổng đó đều có thể đọc và sửa traffic
+  HTTPS của họ qua CA của bạn. `credit-keeper` sẽ in một cảnh báo
+  (`logger.warning`) khi `--listen-host` không nằm trong dải loopback,
+  nhưng nó **không** chặn việc bind. Hãy chỉ làm điều này trong môi trường
+  đã có firewall/cách ly mạng phù hợp.
+- **Config có giá trị nhạy cảm.** File config có thể chứa bearer token mẫu
+  hoặc giá trị inject. `credit-keeper` không expand biến môi trường, nên
+  giá trị bạn viết được dùng nguyên văn. Đừng commit config thật vào git
+  công khai.
+
 ## Why mitmproxy
 
 `credit-keeper` được xây dựng trên mitmproxy vì đây là thư viện proxy Python
@@ -170,4 +200,5 @@ credit-keeper/
 
 ## License
 
-TBD.
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for the
+full text.

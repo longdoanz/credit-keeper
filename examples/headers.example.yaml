@@ -33,7 +33,9 @@ rules:
       - {action: remove, name: Server}
 
   # 3) Inject a placeholder bearer token on requests to the auth host.
-  #    (No env expansion in this feature - the literal string is used as-is.)
+  #    NOTE: credit-keeper does NOT expand environment variables; the literal
+  #    string below ("Bearer ${TOKEN}") is what gets sent on the wire.
+  #    Replace with your real token before using, or remove this rule.
   - name: auth-token
     url_regex: "^https://auth\\.example\\.com/.*"
     methods: [GET, POST]

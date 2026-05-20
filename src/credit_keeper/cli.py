@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import ipaddress
 import logging
+import socket
 import sys
 from pathlib import Path
 
+import yaml
+
 from . import __version__
 from .addon import HeaderCustomizer
+from .config import ConfigError
+
+logger = logging.getLogger(__name__)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -60,26 +67,72 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _is_loopback_host(host: str) -> bool:
+    """Return True if ``host`` resolves only to loopback addresses."""
+    candidates: list[str] = []
+    try:
+        candidates.append(str(ipaddress.ip_address(host)))
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except socket.gaierror:
+            # Unresolvable: be conservative and treat as non-loopback so we
+            # warn the user something is off.
+            return False
+        candidates.extend(info[4][0] for info in infos)
+    if not candidates:
+        return False
+    for addr in candidates:
+        try:
+            if not ipaddress.ip_address(addr).is_loopback:
+                return False
+        except ValueError:
+            return False
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-
-    # Imported lazily so '--help' and '--version' do not pay the startup cost.
-    from mitmproxy.options import Options
-    from mitmproxy.tools.dump import DumpMaster
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
 
-    addon = HeaderCustomizer(config_path=args.config)
+    # Construct the addon eagerly so config errors surface as a clean CLI
+    # error message instead of a Python traceback.
+    try:
+        addon = HeaderCustomizer(
+            config_path=args.config,
+            listen_host=args.listen_host,
+            listen_port=args.listen_port,
+        )
+    except FileNotFoundError as exc:
+        print(f"credit-keeper: error: config file not found: {exc.filename or args.config}", file=sys.stderr)
+        return 2
+    except yaml.YAMLError as exc:
+        print(f"credit-keeper: error: invalid YAML in {args.config}: {exc}", file=sys.stderr)
+        return 2
+    except ConfigError as exc:
+        print(f"credit-keeper: error: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        # Permission denied, is-a-directory, etc.
+        print(f"credit-keeper: error: cannot read {args.config}: {exc}", file=sys.stderr)
+        return 2
 
-    print(
-        f"credit-keeper listening on {args.listen_host}:{args.listen_port}, "
-        f"loaded {len(addon.config.rules)} rules from {args.config}",
-        flush=True,
-    )
+    if not _is_loopback_host(args.listen_host):
+        logger.warning(
+            "credit-keeper: --listen-host=%s binds outside the loopback range; "
+            "this is an authless intercepting proxy. Ensure access is restricted "
+            "and remove the mitmproxy CA cert when finished.",
+            args.listen_host,
+        )
+
+    # Imported lazily so '--help' and '--version' do not pay the startup cost.
+    from mitmproxy.options import Options
+    from mitmproxy.tools.dump import DumpMaster
 
     async def _run() -> None:
         opts = Options(
