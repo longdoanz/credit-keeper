@@ -1,0 +1,49 @@
+# credit-keeper example config
+#
+# Each entry under `rules` is a rule with optional filters and lists of header
+# operations to apply on requests and/or responses.
+#
+# Filters (all optional, combined with AND):
+#   host       - fnmatch glob, case-insensitive (e.g. "*.api.example.com")
+#   host_regex - Python regex applied to the host
+#   url_regex  - Python regex applied to the full URL
+#   methods    - list of HTTP methods (case-insensitive)
+#   apply_to   - "request", "response", or "both"
+#                (defaults to "request"; auto-flips to "response" if only
+#                response ops are provided, or "both" if both lists are set)
+#
+# Header op actions:
+#   set     - overwrite all values for a header (requires `value`)
+#   add     - append another value, keeping existing ones (requires `value`)
+#   remove  - drop the header if present (only `name` needed; idempotent)
+#   replace - re.sub(pattern, value, current_value) per existing value
+#             (requires `pattern` and `value`; supports backrefs like \1)
+
+rules:
+  # 1) Stamp identity headers on requests to the example API.
+  - name: api-identity
+    host: "*.api.example.com"
+    request:
+      - {action: add, name: X-Forwarded-For, value: "10.0.0.1"}
+      - {action: set, name: User-Agent, value: "credit-keeper/0.1"}
+
+  # 2) Hide upstream server fingerprint on every response.
+  - name: drop-server-header
+    response:
+      - {action: remove, name: Server}
+
+  # 3) Inject a placeholder bearer token on requests to the auth host.
+  #    (No env expansion in this feature - the literal string is used as-is.)
+  - name: auth-token
+    url_regex: "^https://auth\\.example\\.com/.*"
+    methods: [GET, POST]
+    request:
+      - {action: set, name: Authorization, value: "Bearer ${TOKEN}"}
+
+  # 4) Redact any bearer token leaking back in response Authorization headers.
+  - name: redact-response-auth
+    response:
+      - action: replace
+        name: Authorization
+        pattern: "Bearer (.*)"
+        value: "Bearer redacted"
