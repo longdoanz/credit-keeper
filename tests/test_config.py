@@ -215,3 +215,70 @@ def test_invalid_replace_pattern_raises_at_load(tmp_path: Path) -> None:
     assert "bad-replace-regex" in msg
     assert "invalid regex" in msg
     assert "Authorization" in msg
+
+
+# ---------------------------------------------------------------------------
+# credential_pool config parsing
+# ---------------------------------------------------------------------------
+
+
+def test_credential_pool_valid_config(tmp_path: Path) -> None:
+    cfg_path = _write(
+        tmp_path,
+        """
+        rules: []
+        credential_pool:
+          enabled: true
+          intercept_host: "q.us-east-1.amazonaws.com"
+          usage_path: "/getUsageLimits"
+          extract_headers: ["Authorization"]
+          auto_rotate: true
+        """,
+    )
+    cfg = load_config(cfg_path)
+    assert cfg.credential_pool is not None
+    assert cfg.credential_pool.enabled is True
+    assert cfg.credential_pool.intercept_host == "q.us-east-1.amazonaws.com"
+    assert cfg.credential_pool.usage_path == "/getUsageLimits"
+    assert cfg.credential_pool.extract_headers == ["Authorization"]
+    assert cfg.credential_pool.auto_rotate is True
+
+
+def test_credential_pool_disabled_by_default(tmp_path: Path) -> None:
+    cfg_path = _write(
+        tmp_path,
+        """
+        rules: []
+        credential_pool:
+          intercept_host: "example.com"
+        """,
+    )
+    cfg = load_config(cfg_path)
+    assert cfg.credential_pool is not None
+    assert cfg.credential_pool.enabled is False
+
+
+def test_credential_pool_missing_intercept_host_when_enabled(tmp_path: Path) -> None:
+    cfg_path = _write(
+        tmp_path,
+        """
+        rules: []
+        credential_pool:
+          enabled: true
+        """,
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(cfg_path)
+    msg = str(excinfo.value)
+    assert "intercept_host" in msg
+
+
+def test_credential_pool_absent_means_none(tmp_path: Path) -> None:
+    cfg_path = _write(
+        tmp_path,
+        """
+        rules: []
+        """,
+    )
+    cfg = load_config(cfg_path)
+    assert cfg.credential_pool is None

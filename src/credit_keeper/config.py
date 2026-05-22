@@ -44,8 +44,18 @@ class Rule:
 
 
 @dataclass
+class CredentialPoolConfig:
+    enabled: bool = False
+    intercept_host: str = ""
+    usage_path: str = "/getUsageLimits"
+    extract_headers: list[str] = field(default_factory=lambda: ["Authorization"])
+    auto_rotate: bool = True
+
+
+@dataclass
 class Config:
     rules: list[Rule] = field(default_factory=list)
+    credential_pool: CredentialPoolConfig | None = None
 
 
 def _fail(rule_name: str, message: str) -> "ConfigError":
@@ -207,4 +217,31 @@ def load_config(path: str | Path) -> Config:
         raise ConfigError("'rules' must be a list")
 
     rules = [_parse_rule(r, i) for i, r in enumerate(rules_raw)]
-    return Config(rules=rules)
+
+    credential_pool: CredentialPoolConfig | None = None
+    pool_raw = raw.get("credential_pool")
+    if pool_raw is not None:
+        if not isinstance(pool_raw, dict):
+            raise ConfigError(
+                "'credential_pool' must be a mapping"
+            )
+        enabled = pool_raw.get("enabled", False)
+        if not isinstance(enabled, bool):
+            raise ConfigError("'credential_pool.enabled' must be a boolean")
+        intercept_host = pool_raw.get("intercept_host", "")
+        if enabled and not intercept_host:
+            raise ConfigError(
+                "'credential_pool.intercept_host' is required when credential_pool is enabled"
+            )
+        usage_path = pool_raw.get("usage_path", "/getUsageLimits")
+        extract_headers = pool_raw.get("extract_headers", ["Authorization"])
+        auto_rotate = pool_raw.get("auto_rotate", True)
+        credential_pool = CredentialPoolConfig(
+            enabled=enabled,
+            intercept_host=intercept_host,
+            usage_path=usage_path,
+            extract_headers=extract_headers,
+            auto_rotate=auto_rotate,
+        )
+
+    return Config(rules=rules, credential_pool=credential_pool)

@@ -60,6 +60,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Do not verify upstream TLS certificates",
     )
     parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("./credit-keeper.db"),
+        help="Path to the SQLite database for credential pool (default: ./credit-keeper.db)",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"credit-keeper {__version__}",
@@ -134,6 +140,9 @@ def main(argv: list[str] | None = None) -> int:
     from mitmproxy.options import Options
     from mitmproxy.tools.dump import DumpMaster
 
+    from .db import CredentialDB
+    from .pool_addon import CredentialPoolAddon
+
     async def _run() -> None:
         opts = Options(
             listen_host=args.listen_host,
@@ -143,6 +152,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         master = DumpMaster(opts)
         master.addons.add(addon)
+
+        # Wire up credential pool addon if enabled
+        if (
+            addon.config.credential_pool is not None
+            and addon.config.credential_pool.enabled
+        ):
+            db = CredentialDB(args.db)
+            pool_addon = CredentialPoolAddon(addon.config.credential_pool, db)
+            master.addons.add(pool_addon)
+            logger.info(
+                "credit-keeper: credential pool enabled, intercepting %s",
+                addon.config.credential_pool.intercept_host,
+            )
+
         try:
             await master.run()
         except KeyboardInterrupt:

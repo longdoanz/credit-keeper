@@ -49,3 +49,18 @@ rules:
         name: Authorization
         pattern: "Bearer (.*)"
         value: "Bearer redacted"
+
+# ---------------------------------------------------------------------------
+# Credential Pool (optional)
+#
+# When enabled, credit-keeper intercepts requests to `intercept_host`,
+# extracts Authorization headers, tracks usage via the getUsageLimits API
+# response, and auto-rotates exhausted credentials with available ones from
+# the shared pool stored in a local SQLite database.
+#
+# credential_pool:
+#   enabled: true
+#   intercept_host: "q.us-east-1.amazonaws.com"
+#   usage_path: "/getUsageLimits"
+#   extract_headers: ["Authorization"]
+#   auto_rotate: true

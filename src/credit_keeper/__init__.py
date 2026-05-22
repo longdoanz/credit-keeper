@@ -1,6 +1,8 @@
 """credit-keeper: config-driven header-mutating HTTP/HTTPS proxy."""
 
-from .config import Config, ConfigError, HeaderOp, Rule, load_config
+from .config import Config, ConfigError, CredentialPoolConfig, HeaderOp, Rule, load_config
+from .db import CredentialDB
+from .pool_addon import CredentialPoolAddon
 from .rules import CaseInsensitiveHeaders, apply_ops, rule_matches
 
 __version__ = "0.1.0"
@@ -9,6 +11,9 @@ __all__ = [
     "__version__",
     "Config",
     "ConfigError",
+    "CredentialDB",
+    "CredentialPoolAddon",
+    "CredentialPoolConfig",
     "HeaderOp",
     "Rule",
     "load_config",
