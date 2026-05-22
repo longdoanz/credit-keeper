@@ -17,12 +17,14 @@ def _make_config(
     intercept_host: str = "q.us-east-1.amazonaws.com",
     usage_path: str = "/getUsageLimits",
     auto_rotate: bool = True,
+    extract_headers: list[str] | None = None,
 ) -> CredentialPoolConfig:
     return CredentialPoolConfig(
         enabled=True,
         intercept_host=intercept_host,
         usage_path=usage_path,
         auto_rotate=auto_rotate,
+        extract_headers=extract_headers or ["Authorization"],
     )
 
 
@@ -195,4 +197,76 @@ def test_non_matching_path_ignored_for_response(tmp_path: Path) -> None:
             "SELECT COUNT(*) FROM usage_snapshots"
         ).fetchone()[0]
     assert req_count == 1
+    assert snap_count == 0
+
+
+def test_auto_rotate_false_disables_rotation(tmp_path: Path) -> None:
+    """When auto_rotate is False, exhausted credentials should not be swapped."""
+    db = CredentialDB(tmp_path / "test.db")
+    config = _make_config(auto_rotate=False)
+    addon = CredentialPoolAddon(config, db)
+
+    # Pre-populate: one exhausted credential, one available
+    exhausted_auth = "Bearer exhausted_token"
+    available_auth = "Bearer available_token"
+    h_exhausted = db.upsert_credential("user1", exhausted_auth, "Plan A")
+    db.upsert_credential("user2", available_auth, "Plan B")
+    db.mark_exhausted(h_exhausted)
+
+    flow = _flow_for(auth=exhausted_auth)
+    addon.request(flow)
+
+    # The Authorization header should NOT have been swapped
+    assert flow.request.headers["Authorization"] == exhausted_auth
+
+
+def test_extract_headers_config_honored(tmp_path: Path) -> None:
+    """When extract_headers is configured with a custom header, use it instead of Authorization."""
+    db = CredentialDB(tmp_path / "test.db")
+    config = _make_config(extract_headers=["X-Api-Key"])
+    addon = CredentialPoolAddon(config, db)
+
+    flow = tflow.tflow(resp=True)
+    flow.request.host = "q.us-east-1.amazonaws.com"
+    flow.request.scheme = "https"
+    flow.request.path = "/getUsageLimits"
+    flow.request.port = 443
+    # Set custom header instead of Authorization
+    flow.request.headers["X-Api-Key"] = "my-secret-key"
+    flow.response.set_text(_make_usage_response(current_usage=50, usage_limit=100))
+
+    addon.request(flow)
+    addon.response(flow)
+
+    # Credential should be stored using the X-Api-Key value
+    expected_hash = hashlib.sha256(b"my-secret-key").hexdigest()
+    with db._lock:
+        cred = db._conn.execute(
+            "SELECT auth_hash FROM credentials WHERE auth_hash = ?",
+            (expected_hash,),
+        ).fetchone()
+    assert cred is not None
+
+
+def test_malformed_json_response_does_not_crash(tmp_path: Path, caplog) -> None:
+    """A malformed JSON response should be logged and not crash the addon."""
+    db = CredentialDB(tmp_path / "test.db")
+    config = _make_config()
+    addon = CredentialPoolAddon(config, db)
+
+    flow = _flow_for()
+    flow.response.set_text("this is not valid json {{{")
+
+    import logging
+    with caplog.at_level(logging.WARNING):
+        addon.request(flow)
+        addon.response(flow)
+
+    assert "failed to parse usage response JSON" in caplog.text
+
+    # No snapshots or credentials should have been stored
+    with db._lock:
+        snap_count = db._conn.execute(
+            "SELECT COUNT(*) FROM usage_snapshots"
+        ).fetchone()[0]
     assert snap_count == 0

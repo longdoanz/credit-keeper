@@ -19,6 +19,10 @@ class CredentialPoolAddon:
         self.config = config
         self.db = db
 
+    def done(self) -> None:  # type: ignore[no-untyped-def]
+        """Called by mitmproxy on shutdown. Clean up DB resources."""
+        self.db.close()
+
     def _compute_auth_hash(self, authorization_header: str) -> str:
         return hashlib.sha256(authorization_header.encode("utf-8")).hexdigest()
 
@@ -27,7 +31,13 @@ class CredentialPoolAddon:
         if host != self.config.intercept_host:
             return
 
-        auth_header = flow.request.headers.get("Authorization", "")
+        # Iterate over configured extract_headers to find the credential
+        auth_header = ""
+        for header_name in self.config.extract_headers:
+            auth_header = flow.request.headers.get(header_name, "")
+            if auth_header:
+                break
+
         if not auth_header:
             return
 
@@ -38,6 +48,7 @@ class CredentialPoolAddon:
             flow.metadata = {}
         flow.metadata["ck_auth_hash"] = auth_hash
         flow.metadata["ck_auth_header"] = auth_header
+        flow.metadata["ck_header_name"] = header_name
 
         # Log the request
         self.db.insert_request_log(
@@ -50,21 +61,12 @@ class CredentialPoolAddon:
 
         # Auto-rotate if credential is exhausted
         if self.config.auto_rotate:
-            cred = self.db.get_available_credential(exclude_auth_hash=None)
-            # Check if the current credential is exhausted
-            row = None
-            with self.db._lock:
-                row = self.db._conn.execute(
-                    "SELECT is_exhausted FROM credentials WHERE auth_hash = ?",
-                    (auth_hash,),
-                ).fetchone()
-
-            if row and row[0] == 1:
+            if self.db.is_exhausted(auth_hash):
                 # Current credential is exhausted, try to rotate
                 available = self.db.get_available_credential(exclude_auth_hash=auth_hash)
                 if available:
                     new_header, new_hash, new_client_id = available
-                    flow.request.headers["Authorization"] = new_header
+                    flow.request.headers[header_name] = new_header
                     flow.metadata["ck_auth_hash"] = new_hash
                     flow.metadata["ck_auth_header"] = new_header
                     logger.info(
@@ -98,7 +100,10 @@ class CredentialPoolAddon:
             auth_hash = flow.metadata.get("ck_auth_hash", "")
 
         if not auth_header:
-            auth_header = flow.request.headers.get("Authorization", "")
+            for header_name in self.config.extract_headers:
+                auth_header = flow.request.headers.get(header_name, "")
+                if auth_header:
+                    break
             if auth_header:
                 auth_hash = self._compute_auth_hash(auth_header)
 

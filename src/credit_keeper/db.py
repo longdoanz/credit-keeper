@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import sqlite3
 import threading
 from pathlib import Path
@@ -54,6 +55,13 @@ class CredentialDB:
     def __init__(self, db_path: str | Path = "./credit-keeper.db") -> None:
         self._db_path = str(db_path)
         self._lock = threading.Lock()
+
+        # Restrict file permissions on new DB files
+        p = Path(self._db_path)
+        if not p.exists():
+            fd = os.open(str(p), os.O_CREAT | os.O_WRONLY, 0o600)
+            os.close(fd)
+
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.executescript(_SCHEMA)
 
@@ -187,3 +195,19 @@ class CredentialDB:
                 (method, url, host, client_id, auth_hash),
             )
             self._conn.commit()
+
+    def is_exhausted(self, auth_hash: str) -> bool:
+        """Return True if the credential identified by auth_hash is marked exhausted."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT is_exhausted FROM credentials WHERE auth_hash = ?",
+                (auth_hash,),
+            ).fetchone()
+        if row is None:
+            return False
+        return bool(row[0])
+
+    def close(self) -> None:
+        """Close the underlying SQLite connection."""
+        with self._lock:
+            self._conn.close()
