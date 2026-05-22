@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS credentials (
     authorization_header TEXT,
     auth_hash TEXT UNIQUE,
     subscription_title TEXT,
+    refresh_token TEXT,
     first_seen_at TEXT,
     last_seen_at TEXT,
     is_exhausted INTEGER DEFAULT 0
@@ -65,6 +66,14 @@ class CredentialDB:
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.executescript(_SCHEMA)
 
+        # Migrate existing DBs: add refresh_token column if missing
+        try:
+            self._conn.execute("ALTER TABLE credentials ADD COLUMN refresh_token TEXT")
+            self._conn.commit()
+        except sqlite3.OperationalError:
+            # Column already exists
+            pass
+
     def _hash(self, authorization_header: str) -> str:
         return hashlib.sha256(authorization_header.encode("utf-8")).hexdigest()
 
@@ -73,6 +82,7 @@ class CredentialDB:
         client_id: str,
         authorization_header: str,
         subscription_title: str | None = None,
+        refresh_token: str | None = None,
     ) -> str:
         """Insert or update a credential. Returns the auth_hash."""
         auth_hash = self._hash(authorization_header)
@@ -80,17 +90,28 @@ class CredentialDB:
             self._conn.execute(
                 """
                 INSERT INTO credentials (client_id, authorization_header, auth_hash,
-                                         subscription_title, first_seen_at, last_seen_at)
-                VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+                                         subscription_title, refresh_token,
+                                         first_seen_at, last_seen_at)
+                VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                 ON CONFLICT(auth_hash) DO UPDATE SET
                     client_id = excluded.client_id,
                     subscription_title = COALESCE(excluded.subscription_title, credentials.subscription_title),
+                    refresh_token = COALESCE(excluded.refresh_token, credentials.refresh_token),
                     last_seen_at = datetime('now')
                 """,
-                (client_id, authorization_header, auth_hash, subscription_title),
+                (client_id, authorization_header, auth_hash, subscription_title, refresh_token),
             )
             self._conn.commit()
         return auth_hash
+
+    def update_refresh_token(self, auth_hash: str, refresh_token: str) -> None:
+        """Update the refresh token for a credential identified by auth_hash."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE credentials SET refresh_token = ? WHERE auth_hash = ?",
+                (refresh_token, auth_hash),
+            )
+            self._conn.commit()
 
     def insert_usage_snapshot(
         self,
@@ -175,6 +196,52 @@ class CredentialDB:
                 ).fetchone()
         if row is None:
             return None
+        return (row[0], row[1], row[2])
+
+    def get_best_available_credential(
+        self, exclude_auth_hash: str | None = None
+    ) -> tuple[str, str, str] | None:
+        """Return (authorization_header, auth_hash, client_id) of the
+        non-exhausted credential with the highest remaining credits
+        (usage_limit - current_usage), excluding the specified hash.
+
+        Falls back to get_available_credential if no usage data exists.
+        """
+        with self._lock:
+            if exclude_auth_hash:
+                row = self._conn.execute(
+                    """
+                    SELECT c.authorization_header, c.auth_hash, c.client_id
+                    FROM credentials c
+                    INNER JOIN usage_snapshots u ON c.client_id = u.client_id
+                    WHERE c.is_exhausted = 0 AND c.auth_hash != ?
+                      AND u.id = (
+                          SELECT MAX(u2.id) FROM usage_snapshots u2
+                          WHERE u2.client_id = c.client_id
+                      )
+                    ORDER BY (u.usage_limit - u.current_usage) DESC
+                    LIMIT 1
+                    """,
+                    (exclude_auth_hash,),
+                ).fetchone()
+            else:
+                row = self._conn.execute(
+                    """
+                    SELECT c.authorization_header, c.auth_hash, c.client_id
+                    FROM credentials c
+                    INNER JOIN usage_snapshots u ON c.client_id = u.client_id
+                    WHERE c.is_exhausted = 0
+                      AND u.id = (
+                          SELECT MAX(u2.id) FROM usage_snapshots u2
+                          WHERE u2.client_id = c.client_id
+                      )
+                    ORDER BY (u.usage_limit - u.current_usage) DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+        if row is None:
+            # Fall back to random selection if no usage data
+            return self.get_available_credential(exclude_auth_hash=exclude_auth_hash)
         return (row[0], row[1], row[2])
 
     def insert_request_log(

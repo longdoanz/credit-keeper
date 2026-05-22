@@ -14,17 +14,19 @@ from credit_keeper.pool_addon import CredentialPoolAddon
 
 
 def _make_config(
-    intercept_host: str = "q.us-east-1.amazonaws.com",
+    intercept_hosts: list[str] | None = None,
     usage_path: str = "/getUsageLimits",
     auto_rotate: bool = True,
     extract_headers: list[str] | None = None,
+    refresh_token_header: str = "",
 ) -> CredentialPoolConfig:
     return CredentialPoolConfig(
         enabled=True,
-        intercept_host=intercept_host,
+        intercept_hosts=intercept_hosts or ["q.us-east-1.amazonaws.com"],
         usage_path=usage_path,
         auto_rotate=auto_rotate,
         extract_headers=extract_headers or ["Authorization"],
+        refresh_token_header=refresh_token_header,
     )
 
 
@@ -164,7 +166,7 @@ def test_request_hook_no_available_credential_passes_through(
 
 def test_non_matching_host_ignored(tmp_path: Path) -> None:
     db = CredentialDB(tmp_path / "test.db")
-    config = _make_config(intercept_host="q.us-east-1.amazonaws.com")
+    config = _make_config(intercept_hosts=["q.us-east-1.amazonaws.com"])
     addon = CredentialPoolAddon(config, db)
 
     flow = _flow_for(host="other.example.com")
@@ -270,3 +272,99 @@ def test_malformed_json_response_does_not_crash(tmp_path: Path, caplog) -> None:
             "SELECT COUNT(*) FROM usage_snapshots"
         ).fetchone()[0]
     assert snap_count == 0
+
+
+def test_multi_host_matching(tmp_path: Path) -> None:
+    """Requests to any host in the intercept_hosts list should be intercepted."""
+    db = CredentialDB(tmp_path / "test.db")
+    config = _make_config(
+        intercept_hosts=["host-a.example.com", "host-b.example.com"]
+    )
+    addon = CredentialPoolAddon(config, db)
+
+    # Request to first host
+    flow_a = _flow_for(host="host-a.example.com", auth="Bearer tokenA")
+    flow_a.response.set_text(_make_usage_response(current_usage=10, usage_limit=100, user_id="userA"))
+    addon.request(flow_a)
+    addon.response(flow_a)
+
+    # Request to second host
+    flow_b = _flow_for(host="host-b.example.com", auth="Bearer tokenB")
+    flow_b.response.set_text(_make_usage_response(current_usage=20, usage_limit=100, user_id="userB"))
+    addon.request(flow_b)
+    addon.response(flow_b)
+
+    # Both credentials should be stored
+    with db._lock:
+        count = db._conn.execute("SELECT COUNT(*) FROM credentials").fetchone()[0]
+    assert count == 2
+
+    # Request to a non-matching host should be ignored
+    flow_c = _flow_for(host="other.example.com", auth="Bearer tokenC")
+    flow_c.response.set_text(_make_usage_response())
+    addon.request(flow_c)
+    addon.response(flow_c)
+
+    with db._lock:
+        count = db._conn.execute("SELECT COUNT(*) FROM credentials").fetchone()[0]
+    assert count == 2  # still 2
+
+
+def test_smart_rotation_picks_best_credential(tmp_path: Path) -> None:
+    """Auto-rotation should pick the credential with the most remaining credits."""
+    db = CredentialDB(tmp_path / "test.db")
+    config = _make_config(auto_rotate=True)
+    addon = CredentialPoolAddon(config, db)
+
+    # Pre-populate credentials
+    exhausted_auth = "Bearer exhausted_token"
+    low_auth = "Bearer low_token"
+    high_auth = "Bearer high_token"
+
+    h_exhausted = db.upsert_credential("user_exhausted", exhausted_auth, "Plan E")
+    db.upsert_credential("user_low", low_auth, "Plan L")
+    db.upsert_credential("user_high", high_auth, "Plan H")
+    db.mark_exhausted(h_exhausted)
+
+    # Add usage snapshots: low has 90/100 used (10 remaining), high has 20/100 used (80 remaining)
+    db.insert_usage_snapshot(
+        client_id="user_low", current_usage=90, usage_limit=100,
+        resource_type="api_calls", display_name="API Calls", unit="calls",
+        days_until_reset=15, next_date_reset=1700000000.0, raw_json="{}",
+    )
+    db.insert_usage_snapshot(
+        client_id="user_high", current_usage=20, usage_limit=100,
+        resource_type="api_calls", display_name="API Calls", unit="calls",
+        days_until_reset=15, next_date_reset=1700000000.0, raw_json="{}",
+    )
+
+    flow = _flow_for(auth=exhausted_auth)
+    addon.request(flow)
+
+    # Should have rotated to the high-remaining credential
+    assert flow.request.headers["Authorization"] == high_auth
+
+
+def test_refresh_token_extraction(tmp_path: Path) -> None:
+    """When refresh_token_header is configured, the token should be extracted and stored."""
+    db = CredentialDB(tmp_path / "test.db")
+    config = _make_config(refresh_token_header="X-Refresh-Token")
+    addon = CredentialPoolAddon(config, db)
+
+    flow = _flow_for()
+    flow.request.headers["X-Refresh-Token"] = "my-refresh-token-123"
+    flow.response.set_text(_make_usage_response(current_usage=50, usage_limit=100))
+
+    addon.request(flow)
+    addon.response(flow)
+
+    # The refresh token should be stored in flow metadata
+    assert flow.metadata.get("ck_refresh_token") == "my-refresh-token-123"
+
+    # The refresh token should be stored in the database
+    with db._lock:
+        row = db._conn.execute(
+            "SELECT refresh_token FROM credentials"
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "my-refresh-token-123"

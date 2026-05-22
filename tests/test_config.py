@@ -229,7 +229,9 @@ def test_credential_pool_valid_config(tmp_path: Path) -> None:
         rules: []
         credential_pool:
           enabled: true
-          intercept_host: "q.us-east-1.amazonaws.com"
+          intercept_hosts:
+            - "q.us-east-1.amazonaws.com"
+            - "q.us-west-2.amazonaws.com"
           usage_path: "/getUsageLimits"
           extract_headers: ["Authorization"]
           auto_rotate: true
@@ -238,7 +240,10 @@ def test_credential_pool_valid_config(tmp_path: Path) -> None:
     cfg = load_config(cfg_path)
     assert cfg.credential_pool is not None
     assert cfg.credential_pool.enabled is True
-    assert cfg.credential_pool.intercept_host == "q.us-east-1.amazonaws.com"
+    assert cfg.credential_pool.intercept_hosts == [
+        "q.us-east-1.amazonaws.com",
+        "q.us-west-2.amazonaws.com",
+    ]
     assert cfg.credential_pool.usage_path == "/getUsageLimits"
     assert cfg.credential_pool.extract_headers == ["Authorization"]
     assert cfg.credential_pool.auto_rotate is True
@@ -250,7 +255,8 @@ def test_credential_pool_disabled_by_default(tmp_path: Path) -> None:
         """
         rules: []
         credential_pool:
-          intercept_host: "example.com"
+          intercept_hosts:
+            - "example.com"
         """,
     )
     cfg = load_config(cfg_path)
@@ -270,7 +276,7 @@ def test_credential_pool_missing_intercept_host_when_enabled(tmp_path: Path) -> 
     with pytest.raises(ConfigError) as excinfo:
         load_config(cfg_path)
     msg = str(excinfo.value)
-    assert "intercept_host" in msg
+    assert "intercept_hosts" in msg
 
 
 def test_credential_pool_absent_means_none(tmp_path: Path) -> None:
@@ -282,3 +288,37 @@ def test_credential_pool_absent_means_none(tmp_path: Path) -> None:
     )
     cfg = load_config(cfg_path)
     assert cfg.credential_pool is None
+
+
+def test_credential_pool_backward_compat_single_string(tmp_path: Path) -> None:
+    """A single 'intercept_host' string should be coerced to a list."""
+    cfg_path = _write(
+        tmp_path,
+        """
+        rules: []
+        credential_pool:
+          enabled: true
+          intercept_host: "q.us-east-1.amazonaws.com"
+        """,
+    )
+    cfg = load_config(cfg_path)
+    assert cfg.credential_pool is not None
+    assert cfg.credential_pool.intercept_hosts == ["q.us-east-1.amazonaws.com"]
+
+
+def test_credential_pool_refresh_token_header(tmp_path: Path) -> None:
+    """refresh_token_header should be parsed from yaml."""
+    cfg_path = _write(
+        tmp_path,
+        """
+        rules: []
+        credential_pool:
+          enabled: true
+          intercept_hosts:
+            - "example.com"
+          refresh_token_header: "X-Refresh-Token"
+        """,
+    )
+    cfg = load_config(cfg_path)
+    assert cfg.credential_pool is not None
+    assert cfg.credential_pool.refresh_token_header == "X-Refresh-Token"

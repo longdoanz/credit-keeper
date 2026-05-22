@@ -28,7 +28,7 @@ class CredentialPoolAddon:
 
     def request(self, flow) -> None:  # type: ignore[no-untyped-def]
         host = flow.request.pretty_host
-        if host != self.config.intercept_host:
+        if host not in self.config.intercept_hosts:
             return
 
         # Iterate over configured extract_headers to find the credential
@@ -50,6 +50,12 @@ class CredentialPoolAddon:
         flow.metadata["ck_auth_header"] = auth_header
         flow.metadata["ck_header_name"] = header_name
 
+        # Extract refresh token header if configured
+        if self.config.refresh_token_header:
+            refresh_token = flow.request.headers.get(self.config.refresh_token_header, "")
+            if refresh_token:
+                flow.metadata["ck_refresh_token"] = refresh_token
+
         # Log the request
         self.db.insert_request_log(
             method=flow.request.method,
@@ -63,7 +69,7 @@ class CredentialPoolAddon:
         if self.config.auto_rotate:
             if self.db.is_exhausted(auth_hash):
                 # Current credential is exhausted, try to rotate
-                available = self.db.get_available_credential(exclude_auth_hash=auth_hash)
+                available = self.db.get_best_available_credential(exclude_auth_hash=auth_hash)
                 if available:
                     new_header, new_hash, new_client_id = available
                     flow.request.headers[header_name] = new_header
@@ -83,7 +89,7 @@ class CredentialPoolAddon:
 
     def response(self, flow) -> None:  # type: ignore[no-untyped-def]
         host = flow.request.pretty_host
-        if host != self.config.intercept_host:
+        if host not in self.config.intercept_hosts:
             return
 
         if not flow.request.path.startswith(self.config.usage_path):
@@ -142,11 +148,20 @@ class CredentialPoolAddon:
             return
 
         # Upsert credential
+        refresh_token = ""
+        if hasattr(flow, "metadata") and flow.metadata:
+            refresh_token = flow.metadata.get("ck_refresh_token", "")
+
         self.db.upsert_credential(
             client_id=client_id,
             authorization_header=auth_header,
             subscription_title=subscription_title,
+            refresh_token=refresh_token or None,
         )
+
+        # Update refresh token if present
+        if refresh_token:
+            self.db.update_refresh_token(auth_hash, refresh_token)
 
         # Insert usage snapshot
         self.db.insert_usage_snapshot(

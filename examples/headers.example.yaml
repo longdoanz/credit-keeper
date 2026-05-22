@@ -53,14 +53,17 @@ rules:
 # ---------------------------------------------------------------------------
 # Credential Pool (optional)
 #
-# When enabled, credit-keeper intercepts requests to `intercept_host`,
+# When enabled, credit-keeper intercepts requests to hosts in `intercept_hosts`,
 # extracts Authorization headers, tracks usage via the getUsageLimits API
 # response, and auto-rotates exhausted credentials with available ones from
 # the shared pool stored in a local SQLite database.
 #
 # credential_pool:
 #   enabled: true
-#   intercept_host: "q.us-east-1.amazonaws.com"
+#   intercept_hosts:
+#     - "q.us-east-1.amazonaws.com"
+#     - "q.us-west-2.amazonaws.com"
 #   usage_path: "/getUsageLimits"
 #   extract_headers: ["Authorization"]
 #   auto_rotate: true
+#   refresh_token_header: "X-Refresh-Token"

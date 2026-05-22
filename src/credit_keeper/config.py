@@ -46,10 +46,11 @@ class Rule:
 @dataclass
 class CredentialPoolConfig:
     enabled: bool = False
-    intercept_host: str = ""
+    intercept_hosts: list[str] = field(default_factory=list)
     usage_path: str = "/getUsageLimits"
     extract_headers: list[str] = field(default_factory=lambda: ["Authorization"])
     auto_rotate: bool = True
+    refresh_token_header: str = ""
 
 
 @dataclass
@@ -228,20 +229,46 @@ def load_config(path: str | Path) -> Config:
         enabled = pool_raw.get("enabled", False)
         if not isinstance(enabled, bool):
             raise ConfigError("'credential_pool.enabled' must be a boolean")
-        intercept_host = pool_raw.get("intercept_host", "")
-        if enabled and not intercept_host:
+
+        # Support both 'intercept_host' (string, backward compat) and
+        # 'intercept_hosts' (list).
+        intercept_hosts: list[str] = []
+        if "intercept_hosts" in pool_raw:
+            val = pool_raw["intercept_hosts"]
+            if isinstance(val, list):
+                intercept_hosts = val
+            elif isinstance(val, str):
+                intercept_hosts = [val]
+            else:
+                raise ConfigError(
+                    "'credential_pool.intercept_hosts' must be a list of strings or a string"
+                )
+        elif "intercept_host" in pool_raw:
+            val = pool_raw["intercept_host"]
+            if isinstance(val, str) and val:
+                intercept_hosts = [val]
+            elif isinstance(val, str):
+                intercept_hosts = []
+            else:
+                raise ConfigError(
+                    "'credential_pool.intercept_host' must be a string"
+                )
+
+        if enabled and not intercept_hosts:
             raise ConfigError(
-                "'credential_pool.intercept_host' is required when credential_pool is enabled"
+                "'credential_pool.intercept_hosts' is required when credential_pool is enabled"
             )
         usage_path = pool_raw.get("usage_path", "/getUsageLimits")
         extract_headers = pool_raw.get("extract_headers", ["Authorization"])
         auto_rotate = pool_raw.get("auto_rotate", True)
+        refresh_token_header = pool_raw.get("refresh_token_header", "")
         credential_pool = CredentialPoolConfig(
             enabled=enabled,
-            intercept_host=intercept_host,
+            intercept_hosts=intercept_hosts,
             usage_path=usage_path,
             extract_headers=extract_headers,
             auto_rotate=auto_rotate,
+            refresh_token_header=refresh_token_header,
         )
 
     return Config(rules=rules, credential_pool=credential_pool)

@@ -163,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
             master.addons.add(pool_addon)
             logger.info(
                 "credit-keeper: credential pool enabled, intercepting %s",
-                addon.config.credential_pool.intercept_host,
+                addon.config.credential_pool.intercept_hosts,
             )
 
         try:
