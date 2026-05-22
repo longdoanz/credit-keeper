@@ -274,6 +274,86 @@ class CredentialDB:
             return False
         return bool(row[0])
 
+    # --- Read-only query methods for the web UI ---
+
+    def get_all_credentials(self) -> list[dict]:
+        """Return all credentials as a list of dicts."""
+        with self._lock:
+            self._conn.row_factory = sqlite3.Row
+            rows = self._conn.execute(
+                "SELECT * FROM credentials ORDER BY last_seen_at DESC"
+            ).fetchall()
+            self._conn.row_factory = None
+        return [dict(r) for r in rows]
+
+    def get_credential_count(self) -> int:
+        """Return total number of credentials."""
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) FROM credentials").fetchone()
+        return row[0] if row else 0
+
+    def get_exhausted_count(self) -> int:
+        """Return number of exhausted credentials."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM credentials WHERE is_exhausted = 1"
+            ).fetchone()
+        return row[0] if row else 0
+
+    def get_usage_history(self, client_id: str, limit: int = 100) -> list[dict]:
+        """Return usage snapshots for a given client_id, newest first."""
+        with self._lock:
+            self._conn.row_factory = sqlite3.Row
+            rows = self._conn.execute(
+                """
+                SELECT * FROM usage_snapshots
+                WHERE client_id = ?
+                ORDER BY captured_at DESC
+                LIMIT ?
+                """,
+                (client_id, limit),
+            ).fetchall()
+            self._conn.row_factory = None
+        return [dict(r) for r in rows]
+
+    def get_latest_usage_per_credential(self) -> dict[str, dict]:
+        """Return a mapping of client_id -> latest usage snapshot dict."""
+        with self._lock:
+            self._conn.row_factory = sqlite3.Row
+            rows = self._conn.execute(
+                """
+                SELECT u.* FROM usage_snapshots u
+                INNER JOIN (
+                    SELECT client_id, MAX(id) as max_id
+                    FROM usage_snapshots GROUP BY client_id
+                ) latest ON u.id = latest.max_id
+                """
+            ).fetchall()
+            self._conn.row_factory = None
+        return {r["client_id"]: dict(r) for r in rows}
+
+    def get_request_logs(self, page: int = 1, per_page: int = 50) -> list[dict]:
+        """Return paginated request logs, newest first."""
+        offset = (page - 1) * per_page
+        with self._lock:
+            self._conn.row_factory = sqlite3.Row
+            rows = self._conn.execute(
+                """
+                SELECT * FROM request_log
+                ORDER BY id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (per_page, offset),
+            ).fetchall()
+            self._conn.row_factory = None
+        return [dict(r) for r in rows]
+
+    def get_request_log_count(self) -> int:
+        """Return total number of request log entries."""
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) FROM request_log").fetchone()
+        return row[0] if row else 0
+
     def close(self) -> None:
         """Close the underlying SQLite connection."""
         with self._lock:

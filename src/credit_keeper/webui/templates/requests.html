@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Requests - credit-keeper{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-2">Request Log</h1>
+<p class="text-gray-600 mb-6">{{ total_count }} total entries (page {{ page }} of {{ total_pages }})</p>
+<div class="overflow-x-auto">
+    <table class="min-w-full bg-white rounded-lg shadow">
+        <thead class="bg-gray-50">
+            <tr>
+                <th class="px-4 py-2 text-left text-sm font-medium text-gray-600">ts</th>
+                <th class="px-4 py-2 text-left text-sm font-medium text-gray-600">method</th>
+                <th class="px-4 py-2 text-left text-sm font-medium text-gray-600">url</th>
+                <th class="px-4 py-2 text-left text-sm font-medium text-gray-600">host</th>
+                <th class="px-4 py-2 text-left text-sm font-medium text-gray-600">client_id</th>
+                <th class="px-4 py-2 text-left text-sm font-medium text-gray-600">auth_hash</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-200">
+            {% for log in logs %}
+            <tr>
+                <td class="px-4 py-2 text-sm">{{ log["ts"] }}</td>
+                <td class="px-4 py-2 text-sm font-mono">{{ log["method"] }}</td>
+                <td class="px-4 py-2 text-sm break-all max-w-xs">{{ log["url"] }}</td>
+                <td class="px-4 py-2 text-sm">{{ log["host"] }}</td>
+                <td class="px-4 py-2 text-sm">{{ log["client_id"] or "-" }}</td>
+                <td class="px-4 py-2 text-sm font-mono">{{ (log["auth_hash"] or "")[:12] }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% if total_pages > 1 %}
+<div class="mt-4 flex space-x-2">
+    {% if page > 1 %}
+    <a href="/requests?page={{ page - 1 }}" class="px-3 py-1 bg-indigo-600 text-white rounded hover:bg-indigo-700">Previous</a>
+    {% endif %}
+    {% if page < total_pages %}
+    <a href="/requests?page={{ page + 1 }}" class="px-3 py-1 bg-indigo-600 text-white rounded hover:bg-indigo-700">Next</a>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - credit-keeper{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-6">Dashboard</h1>
+<div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+    <div class="bg-white rounded-lg shadow p-6">
+        <div class="text-sm text-gray-500 uppercase">Total Credentials</div>
+        <div class="text-3xl font-bold text-indigo-700">{{ total }}</div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <div class="text-sm text-gray-500 uppercase">Active</div>
+        <div class="text-3xl font-bold text-green-600">{{ active }}</div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <div class="text-sm text-gray-500 uppercase">Exhausted</div>
+        <div class="text-3xl font-bold text-red-600">{{ exhausted }}</div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <div class="text-sm text-gray-500 uppercase">Total Usage</div>
+        <div class="text-3xl font-bold text-gray-800">{{ total_current_usage }} / {{ total_usage_limit }}</div>
+    </div>
+</div>
+{% endblock %}

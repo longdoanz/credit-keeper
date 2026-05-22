@@ -66,6 +66,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Path to the SQLite database for credential pool (default: ./credit-keeper.db)",
     )
     parser.add_argument(
+        "--webui-port",
+        type=int,
+        default=None,
+        help="Port to run the web UI dashboard on (disabled if not set)",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"credit-keeper {__version__}",
@@ -164,6 +170,30 @@ def main(argv: list[str] | None = None) -> int:
             logger.info(
                 "credit-keeper: credential pool enabled, intercepting %s",
                 addon.config.credential_pool.intercept_hosts,
+            )
+
+        # Start web UI if requested
+        if args.webui_port is not None:
+            import threading
+
+            import uvicorn
+
+            from .webui.app import create_app
+
+            webui_app = create_app(str(args.db))
+            uvicorn_config = uvicorn.Config(
+                webui_app,
+                host=args.listen_host,
+                port=args.webui_port,
+                log_level="info",
+            )
+            server = uvicorn.Server(uvicorn_config)
+            webui_thread = threading.Thread(target=server.run, daemon=True)
+            webui_thread.start()
+            logger.info(
+                "credit-keeper: web UI started on http://%s:%d",
+                args.listen_host,
+                args.webui_port,
             )
 
         try:
