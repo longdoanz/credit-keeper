@@ -2,7 +2,7 @@
 {% block title %}Dashboard - credit-keeper{% endblock %}
 {% block content %}
 <h1 class="text-2xl font-bold mb-6">Dashboard</h1>
-<div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+<div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
     <div class="bg-white rounded-lg shadow p-6">
         <div class="text-sm text-gray-500 uppercase">Total Credentials</div>
         <div class="text-3xl font-bold text-indigo-700">{{ total }}</div>
@@ -20,4 +20,37 @@
         <div class="text-3xl font-bold text-gray-800">{{ total_current_usage }} / {{ total_usage_limit }}</div>
     </div>
 </div>
+
+{% if usage_shares %}
+<h2 class="text-xl font-bold mb-4">Usage Share per User</h2>
+<div class="bg-white rounded-lg shadow overflow-hidden">
+    <table class="min-w-full">
+        <thead class="bg-gray-50">
+            <tr>
+                <th class="px-4 py-2 text-left text-sm font-medium text-gray-600">User</th>
+                <th class="px-4 py-2 text-left text-sm font-medium text-gray-600">Usage</th>
+                <th class="px-4 py-2 text-left text-sm font-medium text-gray-600">Share</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-200">
+            {% for item in usage_shares %}
+            <tr>
+                <td class="px-4 py-2 text-sm">
+                    <a href="/usage/{{ item['client_id'] }}" class="text-indigo-600 hover:underline">{{ item["client_id"] }}</a>
+                </td>
+                <td class="px-4 py-2 text-sm">{{ item["current_usage"] }} / {{ item["usage_limit"] }}</td>
+                <td class="px-4 py-2 text-sm">
+                    <div class="flex items-center space-x-2">
+                        <div class="w-24 bg-gray-200 rounded-full h-2.5">
+                            <div class="bg-indigo-600 h-2.5 rounded-full" style="width: {{ item['share_pct'] }}%"></div>
+                        </div>
+                        <span class="text-sm font-medium">{{ item["share_pct"] }}%</span>
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
 {% endblock %}

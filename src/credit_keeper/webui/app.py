@@ -35,6 +35,20 @@ def create_app(db_path: str) -> FastAPI:
             u.get("usage_limit", 0) or 0 for u in latest_usage.values()
         )
 
+        # Build per-user share data for display
+        usage_shares = []
+        for client_id, u in latest_usage.items():
+            current = u.get("current_usage", 0) or 0
+            limit = u.get("usage_limit", 0) or 0
+            share_pct = (current / total_current_usage * 100) if total_current_usage > 0 else 0
+            usage_shares.append({
+                "client_id": client_id,
+                "current_usage": current,
+                "usage_limit": limit,
+                "share_pct": round(share_pct, 1),
+            })
+        usage_shares.sort(key=lambda x: x["current_usage"], reverse=True)
+
         return templates.TemplateResponse(
             request,
             "dashboard.html",
@@ -44,6 +58,7 @@ def create_app(db_path: str) -> FastAPI:
                 "exhausted": exhausted,
                 "total_current_usage": total_current_usage,
                 "total_usage_limit": total_usage_limit,
+                "usage_shares": usage_shares,
             },
         )
 
@@ -51,12 +66,17 @@ def create_app(db_path: str) -> FastAPI:
     def credentials(request: Request) -> HTMLResponse:
         creds = db.get_all_credentials()
         latest_usage = db.get_latest_usage_per_credential()
+        # Compute total current usage for share calculation
+        total_current_usage = sum(
+            u.get("current_usage", 0) or 0 for u in latest_usage.values()
+        )
         return templates.TemplateResponse(
             request,
             "credentials.html",
             {
                 "credentials": creds,
                 "latest_usage": latest_usage,
+                "total_current_usage": total_current_usage,
             },
         )
 
