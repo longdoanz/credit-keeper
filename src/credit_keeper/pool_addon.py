@@ -92,7 +92,8 @@ class CredentialPoolAddon:
         if host not in self.config.intercept_hosts:
             return
 
-        if not flow.request.path.startswith(self.config.usage_path):
+        request_path = flow.request.path.split("?", 1)[0]
+        if request_path != self.config.usage_path:
             return
 
         if flow.response is None:

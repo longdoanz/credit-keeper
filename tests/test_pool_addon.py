@@ -345,6 +345,48 @@ def test_smart_rotation_picks_best_credential(tmp_path: Path) -> None:
     assert flow.request.headers["Authorization"] == high_auth
 
 
+def test_usage_path_prefix_not_matched(tmp_path: Path) -> None:
+    """A path that starts with the usage_path but is not exact should not trigger usage parsing."""
+    db = CredentialDB(tmp_path / "test.db")
+    config = _make_config(usage_path="/getUsageLimits")
+    addon = CredentialPoolAddon(config, db)
+
+    flow = _flow_for(path="/getUsageLimitsExtra")
+    flow.response.set_text(_make_usage_response())
+
+    addon.request(flow)
+    addon.response(flow)
+
+    # Request log should exist but no usage snapshot (path is not exact match)
+    with db._lock:
+        req_count = db._conn.execute("SELECT COUNT(*) FROM request_log").fetchone()[0]
+        snap_count = db._conn.execute(
+            "SELECT COUNT(*) FROM usage_snapshots"
+        ).fetchone()[0]
+    assert req_count == 1
+    assert snap_count == 0
+
+
+def test_usage_path_with_query_string_matched(tmp_path: Path) -> None:
+    """A path that matches usage_path but has a query string should still trigger usage parsing."""
+    db = CredentialDB(tmp_path / "test.db")
+    config = _make_config(usage_path="/getUsageLimits")
+    addon = CredentialPoolAddon(config, db)
+
+    flow = _flow_for(path="/getUsageLimits?foo=bar")
+    flow.response.set_text(_make_usage_response())
+
+    addon.request(flow)
+    addon.response(flow)
+
+    # Usage snapshot should be stored since path portion matches exactly
+    with db._lock:
+        snap_count = db._conn.execute(
+            "SELECT COUNT(*) FROM usage_snapshots"
+        ).fetchone()[0]
+    assert snap_count == 1
+
+
 def test_refresh_token_extraction(tmp_path: Path) -> None:
     """When refresh_token_header is configured, the token should be extracted and stored."""
     db = CredentialDB(tmp_path / "test.db")

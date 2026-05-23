@@ -64,6 +64,8 @@ class CredentialDB:
             os.close(fd)
 
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
 
         # Migrate existing DBs: add refresh_token column if missing
