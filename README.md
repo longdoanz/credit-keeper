@@ -1,39 +1,47 @@
 # credit-keeper
 
-> Proxy HTTP/HTTPS viết lại header theo file YAML.
-> A header-rewriting HTTP/HTTPS proxy driven by a YAML config.
+A shared-credit proxy that lets multiple users pool their API credentials. When one user's credits are exhausted, the proxy automatically rotates to the credential with the most remaining credits. Built on [mitmproxy 12](https://mitmproxy.org/) as a Python library.
 
-`credit-keeper` là một CLI Python nhỏ, dùng [mitmproxy](https://mitmproxy.org/)
-như một thư viện. Bạn khai báo các quy tắc (rule) trong file YAML; công cụ sẽ
-chạy một proxy HTTP/HTTPS và sửa header trên request hoặc response khi traffic
-đi qua. Mỗi rule có thể lọc theo host (glob hoặc regex), URL regex, HTTP method,
-sau đó `set`, `add`, `remove`, hoặc `replace` (regex) header.
+## Features
 
-## Cài đặt / Installation
+- **Header rewriting** via YAML config (set, add, remove, replace with regex)
+- **Credential pool** - intercepts Authorization headers, stores credentials in SQLite
+- **Usage tracking** - intercepts `getUsageLimits` API responses to track `currentUsage` / `usageLimit` per credential
+- **Smart rotation** - when a credential is exhausted, automatically swaps to the credential with the most remaining credits
+- **Multi-host intercept** - configurable list of hosts to intercept (not limited to a single host)
+- **Refresh token storage** - captures and stores refresh tokens for future token renewal
+- **Web UI dashboard** (FastAPI + Tailwind CSS) showing:
+  - Credential overview (total, active, exhausted)
+  - Per-user usage share breakdown with progress bars
+  - Detailed credentials table with usage, remaining, status, last activity
+  - Usage history per client
+  - Request log with pagination
 
-Yêu cầu: Python 3.12 trở lên và [`uv`](https://docs.astral.sh/uv/).
+## Installation
+
+Requirements: Python 3.12+ and [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
-# Cài uv nếu chưa có:
+# Install uv if not already present:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 
-# Đồng bộ môi trường (tạo .venv và cài deps):
+# Sync the environment (creates .venv and installs dependencies):
 uv sync --python 3.12
 
-# Có dev deps để chạy test:
+# Include dev dependencies for running tests:
 uv sync --python 3.12 --extra dev
 ```
 
-Sau khi `uv sync`, lệnh `credit-keeper` sẵn sàng dưới `uv run`:
+After `uv sync`, the `credit-keeper` command is available via `uv run`:
 
 ```bash
 uv run --python 3.12 credit-keeper --help
 ```
 
-## Quick start
+## Quick Start
 
-1. Tạo file config, ví dụ `headers.yaml`:
+1. Create a config file, e.g. `config.yaml`:
 
    ```yaml
    rules:
@@ -41,164 +49,161 @@ uv run --python 3.12 credit-keeper --help
        host: "*.example.com"
        request:
          - {action: set, name: User-Agent, value: "credit-keeper/0.1"}
-         - {action: add, name: X-Forwarded-For, value: "10.0.0.1"}
 
-     - name: drop-server
-       response:
-         - {action: remove, name: Server}
+   credential_pool:
+     enabled: true
+     intercept_hosts:
+       - "q.us-east-1.amazonaws.com"
+       - "q.us-west-2.amazonaws.com"
+     usage_path: "/getUsageLimits"
+     extract_headers: ["Authorization"]
+     auto_rotate: true
+     refresh_token_header: "X-Refresh-Token"
    ```
 
-2. Chạy proxy:
+2. Start the proxy (with the web UI on port 9090):
 
    ```bash
-   uv run --python 3.12 credit-keeper -c headers.yaml
-   # credit-keeper listening on 127.0.0.1:8080, loaded 2 rules from headers.yaml
+   uv run --python 3.12 credit-keeper -c config.yaml --webui-port 9090
+   # credit-keeper listening on 127.0.0.1:8080, loaded 1 rules from config.yaml
    ```
 
-3. Trỏ trình duyệt hoặc hệ thống sang proxy `127.0.0.1:8080` (hoặc dùng
-   `curl -x http://127.0.0.1:8080 ...`).
+3. Point your browser or application to use `127.0.0.1:8080` as the HTTP proxy.
 
-4. Đối với HTTPS, cài CA cert của mitmproxy: trong khi đã trỏ qua proxy, mở
-   trình duyệt vào [http://mitm.it](http://mitm.it) và làm theo hướng dẫn cho
-   hệ điều hành của bạn. Nếu chỉ test bằng `curl`, có thể bỏ qua bằng
-   `--ssl-insecure` ở phía proxy và `-k` ở `curl`.
+4. For HTTPS interception, install the mitmproxy CA certificate: while connected through the proxy, open [http://mitm.it](http://mitm.it) in a browser and follow the instructions for your OS. Alternatively, use `--ssl-insecure` on the proxy side and `-k` with `curl` for quick testing.
 
-CLI options:
+5. Open [http://127.0.0.1:9090](http://127.0.0.1:9090) to view the web dashboard.
 
-| Flag                        | Default       | Mô tả |
-|-----------------------------|---------------|-------|
-| `-c`, `--config PATH`       | (bắt buộc)    | File YAML chứa các rule. |
-| `--listen-host HOST`        | `127.0.0.1`   | Địa chỉ bind proxy. |
-| `-p`, `--listen-port PORT`  | `8080`        | Cổng nghe. |
-| `--mode MODE`               | `regular`     | mitmproxy proxy mode (regular, transparent, socks5, reverse:..., upstream:...). |
-| `--ssl-insecure`            | tắt           | Không verify TLS upstream. |
-| `--version`                 |               | In phiên bản và thoát. |
+## CLI Flags
 
-Bạn cũng có thể chạy bằng `python -m credit_keeper -c headers.yaml`.
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-c`, `--config PATH` | (required) | Path to the YAML config file |
+| `--listen-host HOST` | `127.0.0.1` | Address to bind the proxy on |
+| `-p`, `--listen-port PORT` | `8080` | Port to listen on |
+| `--mode MODE` | `regular` | mitmproxy proxy mode (regular, transparent, socks5, reverse:..., upstream:...) |
+| `--ssl-insecure` | off | Do not verify upstream TLS certificates |
+| `--db PATH` | `./credit-keeper.db` | Path to the SQLite database for the credential pool |
+| `--webui-port PORT` | (disabled) | Port to run the web UI dashboard on |
+| `--version` | | Print version and exit |
 
-## Config reference
+You can also run as a Python module: `python -m credit_keeper -c config.yaml`.
 
-File config là một YAML mapping với một key duy nhất ở cấp cao nhất, `rules`,
-chứa danh sách các rule. Các filter trong cùng một rule được kết hợp bằng AND.
+## Config Reference
 
-### Rule fields
+The config is a YAML file with two top-level sections: `rules` and `credential_pool`.
 
-| Field        | Type                                        | Default     | Mô tả |
-|--------------|---------------------------------------------|-------------|-------|
-| `name`       | string (required)                           | -           | Tên gợi nhớ; xuất hiện trong thông báo lỗi. |
-| `host`       | string                                      | none        | `fnmatch` glob, không phân biệt hoa thường. Ví dụ: `*.api.example.com`. |
-| `host_regex` | string                                      | none        | Python regex áp lên host bằng `re.search`. |
-| `url_regex`  | string                                      | none        | Python regex áp lên full URL bằng `re.search`. |
-| `methods`    | list of strings                             | none        | Danh sách HTTP method (không phân biệt hoa thường). |
-| `apply_to`   | `"request"` \| `"response"` \| `"both"`     | xem dưới    | Hướng nào rule sẽ chạy. |
-| `request`    | list of header ops                          | `[]`        | Op áp dụng trên request đi ra. |
-| `response`   | list of header ops                          | `[]`        | Op áp dụng trên response đi vào. |
+### Rules
 
-`apply_to` mặc định là `"request"`. Nếu bạn bỏ trống và rule chỉ có `response`
-ops, nó tự chuyển sang `"response"`. Nếu cả `request` lẫn `response` đều có
-ops, nó tự chuyển sang `"both"`.
+The `rules` key contains a list of header-rewriting rules. Filters within a single rule combine with AND logic.
 
-### HeaderOp actions
+#### Rule Fields
 
-| Action     | Required fields           | Ví dụ |
-|------------|---------------------------|-------|
-| `set`      | `name`, `value`           | `{action: set, name: User-Agent, value: "credit-keeper/0.1"}` |
-| `add`      | `name`, `value`           | `{action: add, name: X-Forwarded-For, value: "10.0.0.1"}` |
-| `remove`   | `name`                    | `{action: remove, name: Server}` |
-| `replace`  | `name`, `pattern`, `value`| `{action: replace, name: Authorization, pattern: "Bearer (.*)", value: "Bearer redacted-\\1"}` |
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string (required) | - | Human-readable name; appears in error messages |
+| `host` | string | none | `fnmatch` glob, case-insensitive (e.g. `*.api.example.com`) |
+| `host_regex` | string | none | Python regex applied via `re.search` on the host |
+| `url_regex` | string | none | Python regex applied via `re.search` on the full URL |
+| `methods` | list of strings | none | HTTP methods to match (case-insensitive) |
+| `apply_to` | `"request"` / `"response"` / `"both"` | inferred | Direction the rule applies to |
+| `request` | list of header ops | `[]` | Operations applied to outgoing requests |
+| `response` | list of header ops | `[]` | Operations applied to incoming responses |
 
-Ngữ nghĩa các action:
+When `apply_to` is omitted, it defaults to `"request"`. If only `response` ops are provided, it flips to `"response"`. If both lists have ops, it becomes `"both"`.
 
-- `set` ghi đè toàn bộ giá trị hiện có của header bằng một giá trị mới.
-- `add` thêm một giá trị nữa, giữ nguyên các giá trị hiện có.
-- `remove` xoá header nếu có; không lỗi khi header chưa tồn tại.
-- `replace` chạy `re.sub(pattern, value, current_value)` cho từng giá trị hiện
-  có của header. Backref kiểu `\1` trong `value` hoạt động bình thường.
+#### Header Op Actions
 
-Xem `examples/headers.example.yaml` để có một config mẫu đầy đủ chú thích.
+| Action | Required Fields | Example |
+|--------|----------------|---------|
+| `set` | `name`, `value` | `{action: set, name: User-Agent, value: "mybot/1.0"}` |
+| `add` | `name`, `value` | `{action: add, name: X-Forwarded-For, value: "10.0.0.1"}` |
+| `remove` | `name` | `{action: remove, name: Server}` |
+| `replace` | `name`, `pattern`, `value` | `{action: replace, name: Authorization, pattern: "Bearer (.*)", value: "Bearer redacted-\\1"}` |
 
-## Security
+- `set` overwrites all existing values for the header with a single new value.
+- `add` appends another value, keeping existing ones.
+- `remove` deletes the header if present; no error when absent.
+- `replace` runs `re.sub(pattern, value, current_value)` on each existing value. Backreferences like `\1` work as expected.
 
-`credit-keeper` chạy đè lên mitmproxy nên có khả năng MITM toàn bộ HTTPS đi qua
-nó. Vì vậy hãy đọc kỹ phần này trước khi dùng.
+### Credential Pool
 
-- **CA cert lifecycle.** Để intercept HTTPS, bạn phải cài CA cert của mitmproxy
-  vào trust store. Cert này nằm ở `~/.mitmproxy/mitmproxy-ca-cert.pem`. Khi
-  cert đã được tin cậy, **bất kỳ tiến trình nào** chạy trên máy bạn và bind
-  vào `127.0.0.1:8080` (hoặc cổng khác đang chạy proxy) đều có thể giả mạo
-  bất kỳ HTTPS site nào. Khi xong việc, gỡ cert khỏi trust store và xoá thư
-  mục `~/.mitmproxy` nếu không cần lưu lại.
-- **`--ssl-insecure` semantics.** Cờ này chỉ tắt verify chứng chỉ phía
-  *upstream* (tức là proxy → server thật). Nó **không** giống `curl -k`.
-  Khi bật, proxy vẫn xuất CA của mitmproxy cho client, nhưng tự nó chấp
-  nhận mọi chứng chỉ từ server, kể cả giả mạo. Trên mạng không tin cậy,
-  bật cờ này có nghĩa là `Authorization` header bạn đang viết lại có thể
-  rơi vào tay kẻ tấn công đứng giữa.
-- **Listen-host risk.** Mặc định `--listen-host 127.0.0.1` chỉ cho phép truy
-  cập từ chính máy bạn. Đổi sang `0.0.0.0` (hoặc một interface LAN) sẽ biến
-  máy bạn thành một authless TLS-intercepting gateway cho cả mạng nội bộ:
-  bất kỳ ai chiếm được kết nối tới cổng đó đều có thể đọc và sửa traffic
-  HTTPS của họ qua CA của bạn. `credit-keeper` sẽ in một cảnh báo
-  (`logger.warning`) khi `--listen-host` không nằm trong dải loopback,
-  nhưng nó **không** chặn việc bind. Hãy chỉ làm điều này trong môi trường
-  đã có firewall/cách ly mạng phù hợp.
-- **Config có giá trị nhạy cảm.** File config có thể chứa bearer token mẫu
-  hoặc giá trị inject. `credit-keeper` không expand biến môi trường, nên
-  giá trị bạn viết được dùng nguyên văn. Đừng commit config thật vào git
-  công khai.
+The optional `credential_pool` section enables shared-credit management.
 
-## Why mitmproxy
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable the credential pool feature |
+| `intercept_hosts` | list of strings | `[]` | Hosts to intercept for credential tracking |
+| `usage_path` | string | `"/getUsageLimits"` | URL path that returns usage data |
+| `extract_headers` | list of strings | `["Authorization"]` | Headers to extract as credentials |
+| `auto_rotate` | bool | `true` | Automatically swap exhausted credentials |
+| `refresh_token_header` | string | `""` | Header name containing a refresh token |
 
-`credit-keeper` được xây dựng trên mitmproxy vì đây là thư viện proxy Python
-hỗ trợ HTTPS phổ biến và ổn định nhất hiện nay. mitmproxy cung cấp một addon
-API rất đơn giản (mỗi addon là một class Python với các hook như `request`,
-`response`), can thiệp được cả request lẫn response trong cùng một nơi, và
-xử lý sẵn các phần khó như TLS interception, cấp CA cert, parse HTTP/2.
-Nhờ vậy `credit-keeper` chỉ tập trung vào việc khớp rule và sửa header,
-không phải dựng lại tầng mạng.
+Backward compatibility: `intercept_host` (single string) is still accepted and coerced to a list.
 
-## Development
+## Web UI
 
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-uv sync --python 3.12 --extra dev
-uv run --python 3.12 pytest -q
-```
+When `--webui-port` is set, a FastAPI web dashboard starts alongside the proxy. Pages:
 
-Smoke-test CLI:
+| Route | Description |
+|-------|-------------|
+| `/` | Dashboard overview: total/active/exhausted credentials, total usage, and per-user usage share breakdown |
+| `/credentials` | Table of all credentials with usage, remaining credits, usage share %, status, refresh token presence, and last activity |
+| `/usage/{client_id}` | Usage snapshot history for a specific user (current_usage, usage_limit, remaining, resource_type, days_until_reset) |
+| `/requests` | Paginated request log (timestamp, method, URL, host, client_id, auth_hash) |
 
-```bash
-uv run --python 3.12 credit-keeper --help
-uv run --python 3.12 credit-keeper -c examples/headers.example.yaml -p 18080
-# trong shell khác:
-curl -x http://127.0.0.1:18080 -s -o /dev/null -w "%{http_code}\n" http://example.com
-```
+The UI uses Tailwind CSS via CDN for styling; no build step is required.
 
-Test addon dùng `mitmproxy.test.tflow` để dựng `HTTPFlow` giả nên không cần
-khởi động proxy thật.
-
-## Project layout
+## Project Layout
 
 ```
 credit-keeper/
-├── pyproject.toml              # build / deps / console script
-├── README.md                   # tài liệu này
+├── pyproject.toml                  # Build config, dependencies, console script
+├── README.md
+├── AGENTS.md                       # AI assistant context file
+├── LICENSE                         # MIT License
 ├── examples/
-│   └── headers.example.yaml    # config mẫu có chú thích
+│   └── headers.example.yaml       # Annotated example config
 ├── src/credit_keeper/
-│   ├── __init__.py             # public API: Config, Rule, HeaderOp, ...
-│   ├── __main__.py             # `python -m credit_keeper`
-│   ├── config.py               # dataclass + YAML loader + ConfigError
-│   ├── rules.py                # rule_matches, apply_ops, CaseInsensitiveHeaders
-│   ├── addon.py                # mitmproxy addon HeaderCustomizer
-│   └── cli.py                  # entry point `credit-keeper`
+│   ├── __init__.py                 # Public API exports, version
+│   ├── __main__.py                 # python -m credit_keeper entry point
+│   ├── config.py                   # Dataclasses + YAML loader + validation
+│   ├── rules.py                    # Rule matching + header op application
+│   ├── addon.py                    # mitmproxy addon (HeaderCustomizer)
+│   ├── pool_addon.py              # mitmproxy addon (CredentialPoolAddon)
+│   ├── db.py                       # SQLite storage layer (CredentialDB)
+│   └── webui/
+│       ├── __init__.py
+│       ├── app.py                  # FastAPI application factory
+│       └── templates/              # Jinja2 HTML templates (Tailwind CSS)
+│           ├── base.html
+│           ├── dashboard.html
+│           ├── credentials.html
+│           ├── usage.html
+│           └── requests.html
 └── tests/
     ├── test_config.py
     ├── test_rules.py
-    └── test_addon.py           # dùng mitmproxy.test.tflow
+    ├── test_addon.py
+    ├── test_pool_addon.py
+    ├── test_db.py
+    └── test_webui.py
 ```
+
+## Security
+
+`credit-keeper` wraps mitmproxy and can MITM all HTTPS traffic passing through it. Read this section carefully.
+
+- **CA certificate lifecycle.** To intercept HTTPS, you must install the mitmproxy CA certificate into your trust store. The cert is at `~/.mitmproxy/mitmproxy-ca-cert.pem`. Once trusted, any process that binds to the proxy port can impersonate any HTTPS site. When finished, remove the cert from your trust store and delete `~/.mitmproxy` if not needed.
+
+- **`--ssl-insecure` semantics.** This flag disables upstream TLS certificate verification only (proxy to real server). The proxy still presents its own CA cert to clients. On untrusted networks, enabling this means that Authorization headers could be captured by a man-in-the-middle between the proxy and the upstream server.
+
+- **Listen-host risk.** Default `--listen-host 127.0.0.1` restricts access to localhost. Changing to `0.0.0.0` or a LAN interface turns your machine into an unauthenticated TLS-intercepting gateway. `credit-keeper` logs a warning when the listen host is not loopback, but does not block binding. Only do this in firewalled/isolated environments.
+
+- **Credential storage.** The SQLite database stores full Authorization header values (needed for rotation). Protect the `.db` file with appropriate filesystem permissions. New database files are created with mode `0600`.
+
+- **Config secrets.** The config file may contain bearer tokens or sensitive header values. `credit-keeper` does not expand environment variables; literal values are sent on the wire. Do not commit real configs to public repositories.
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for the
-full text.
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for the full text.
