@@ -48,6 +48,7 @@ class CredentialPoolConfig:
     enabled: bool = False
     intercept_hosts: list[str] = field(default_factory=list)
     usage_path: str = "/getUsageLimits"
+    usage_amz_target: str = ""
     extract_headers: list[str] = field(default_factory=lambda: ["Authorization"])
     auto_rotate: bool = True
     refresh_token_header: str = ""
@@ -259,6 +260,7 @@ def load_config(path: str | Path) -> Config:
                 "'credential_pool.intercept_hosts' is required when credential_pool is enabled"
             )
         usage_path = pool_raw.get("usage_path", "/getUsageLimits")
+        usage_amz_target = pool_raw.get("usage_amz_target", "")
         extract_headers = pool_raw.get("extract_headers", ["Authorization"])
         auto_rotate = pool_raw.get("auto_rotate", True)
         refresh_token_header = pool_raw.get("refresh_token_header", "")
@@ -266,6 +268,7 @@ def load_config(path: str | Path) -> Config:
             enabled=enabled,
             intercept_hosts=intercept_hosts,
             usage_path=usage_path,
+            usage_amz_target=usage_amz_target,
             extract_headers=extract_headers,
             auto_rotate=auto_rotate,
             refresh_token_header=refresh_token_header,

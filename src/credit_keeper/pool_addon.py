@@ -92,8 +92,18 @@ class CredentialPoolAddon:
         if host not in self.config.intercept_hosts:
             return
 
+        # Match by URL path (REST-style, e.g. Kiro IDE) OR by x-amz-target
+        # header (AWS SDK style, e.g. kiro-cli).
         request_path = flow.request.path.split("?", 1)[0]
-        if request_path != self.config.usage_path:
+        path_match = request_path == self.config.usage_path
+
+        amz_target = flow.request.headers.get("x-amz-target", "")
+        target_match = (
+            bool(self.config.usage_amz_target)
+            and amz_target == self.config.usage_amz_target
+        )
+
+        if not (path_match or target_match):
             return
 
         if flow.response is None:
