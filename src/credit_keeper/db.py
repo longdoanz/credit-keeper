@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS credentials (
     refresh_token TEXT,
     first_seen_at TEXT,
     last_seen_at TEXT,
-    is_exhausted INTEGER DEFAULT 0
+    is_exhausted INTEGER DEFAULT 0,
+    is_dead INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS usage_snapshots (
@@ -73,7 +74,15 @@ class CredentialDB:
             self._conn.execute("ALTER TABLE credentials ADD COLUMN refresh_token TEXT")
             self._conn.commit()
         except sqlite3.OperationalError:
-            # Column already exists
+            pass
+
+        # Migrate existing DBs: add is_dead column if missing
+        try:
+            self._conn.execute(
+                "ALTER TABLE credentials ADD COLUMN is_dead INTEGER DEFAULT 0"
+            )
+            self._conn.commit()
+        except sqlite3.OperationalError:
             pass
 
     def _hash(self, authorization_header: str) -> str:
@@ -169,6 +178,35 @@ class CredentialDB:
             )
             self._conn.commit()
 
+    def mark_dead(self, auth_hash: str) -> None:
+        """Mark a credential as dead (token rejected by backend, e.g. 401/403)."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE credentials SET is_dead = 1 WHERE auth_hash = ?",
+                (auth_hash,),
+            )
+            self._conn.commit()
+
+    def mark_alive(self, auth_hash: str) -> None:
+        """Mark a credential as alive (clear the dead flag)."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE credentials SET is_dead = 0 WHERE auth_hash = ?",
+                (auth_hash,),
+            )
+            self._conn.commit()
+
+    def is_dead(self, auth_hash: str) -> bool:
+        """Return True if the credential is marked dead."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT is_dead FROM credentials WHERE auth_hash = ?",
+                (auth_hash,),
+            ).fetchone()
+        if row is None:
+            return False
+        return bool(row[0])
+
     def get_available_credential(
         self, exclude_auth_hash: str | None = None
     ) -> tuple[str, str, str] | None:
@@ -182,7 +220,7 @@ class CredentialDB:
                     """
                     SELECT authorization_header, auth_hash, client_id
                     FROM credentials
-                    WHERE is_exhausted = 0 AND auth_hash != ?
+                    WHERE is_exhausted = 0 AND is_dead = 0 AND auth_hash != ?
                     ORDER BY RANDOM() LIMIT 1
                     """,
                     (exclude_auth_hash,),
@@ -192,7 +230,7 @@ class CredentialDB:
                     """
                     SELECT authorization_header, auth_hash, client_id
                     FROM credentials
-                    WHERE is_exhausted = 0
+                    WHERE is_exhausted = 0 AND is_dead = 0
                     ORDER BY RANDOM() LIMIT 1
                     """
                 ).fetchone()
@@ -216,7 +254,8 @@ class CredentialDB:
                     SELECT c.authorization_header, c.auth_hash, c.client_id
                     FROM credentials c
                     INNER JOIN usage_snapshots u ON c.client_id = u.client_id
-                    WHERE c.is_exhausted = 0 AND c.auth_hash != ?
+                    WHERE c.is_exhausted = 0 AND c.is_dead = 0
+                      AND c.auth_hash != ?
                       AND u.id = (
                           SELECT MAX(u2.id) FROM usage_snapshots u2
                           WHERE u2.client_id = c.client_id
@@ -233,7 +272,7 @@ class CredentialDB:
                     SELECT c.authorization_header, c.auth_hash, c.client_id
                     FROM credentials c
                     INNER JOIN usage_snapshots u ON c.client_id = u.client_id
-                    WHERE c.is_exhausted = 0
+                    WHERE c.is_exhausted = 0 AND c.is_dead = 0
                       AND u.id = (
                           SELECT MAX(u2.id) FROM usage_snapshots u2
                           WHERE u2.client_id = c.client_id
@@ -301,6 +340,14 @@ class CredentialDB:
         with self._lock:
             row = self._conn.execute(
                 "SELECT COUNT(*) FROM credentials WHERE is_exhausted = 1"
+            ).fetchone()
+        return row[0] if row else 0
+
+    def get_dead_count(self) -> int:
+        """Return number of dead credentials (tokens rejected by backend)."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM credentials WHERE is_dead = 1"
             ).fetchone()
         return row[0] if row else 0
 

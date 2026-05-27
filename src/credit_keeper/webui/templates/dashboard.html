@@ -2,7 +2,7 @@
 {% block title %}Dashboard - credit-keeper{% endblock %}
 {% block content %}
 <h1 class="text-2xl font-bold mb-6">Dashboard</h1>
-<div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+<div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
     <div class="bg-white rounded-lg shadow p-6">
         <div class="text-sm text-gray-500 uppercase">Total Credentials</div>
         <div class="text-3xl font-bold text-indigo-700">{{ total }}</div>
@@ -14,6 +14,10 @@
     <div class="bg-white rounded-lg shadow p-6">
         <div class="text-sm text-gray-500 uppercase">Exhausted</div>
         <div class="text-3xl font-bold text-red-600">{{ exhausted }}</div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <div class="text-sm text-gray-500 uppercase">Dead</div>
+        <div class="text-3xl font-bold text-gray-500">{{ dead }}</div>
     </div>
     <div class="bg-white rounded-lg shadow p-6">
         <div class="text-sm text-gray-500 uppercase">Total Usage</div>

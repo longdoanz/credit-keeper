@@ -92,6 +92,23 @@ class CredentialPoolAddon:
         if host not in self.config.intercept_hosts:
             return
 
+        # Detect dead credentials: any 401/403 from an intercepted host means
+        # the token currently in use was rejected. Mark it dead so future
+        # rotations skip it. This applies to ALL requests to intercepted
+        # hosts, not just /getUsageLimits.
+        if flow.response is not None and flow.response.status_code in (401, 403):
+            auth_hash = ""
+            if hasattr(flow, "metadata") and flow.metadata:
+                auth_hash = flow.metadata.get("ck_auth_hash", "")
+            if auth_hash:
+                self.db.mark_dead(auth_hash)
+                logger.warning(
+                    "credit-keeper: token %s rejected (HTTP %d), marking dead",
+                    auth_hash[:8],
+                    flow.response.status_code,
+                )
+            return
+
         # Match by URL path (REST-style, e.g. Kiro IDE) OR by x-amz-target
         # header (AWS SDK style, e.g. kiro-cli).
         request_path = flow.request.path.split("?", 1)[0]

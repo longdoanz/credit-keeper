@@ -24,7 +24,8 @@ def create_app(db_path: str) -> FastAPI:
     def dashboard(request: Request) -> HTMLResponse:
         total = db.get_credential_count()
         exhausted = db.get_exhausted_count()
-        active = total - exhausted
+        dead = db.get_dead_count()
+        active = total - exhausted - dead
 
         # Compute total usage summary from latest snapshots
         latest_usage = db.get_latest_usage_per_credential()
@@ -56,6 +57,7 @@ def create_app(db_path: str) -> FastAPI:
                 "total": total,
                 "active": active,
                 "exhausted": exhausted,
+                "dead": dead,
                 "total_current_usage": total_current_usage,
                 "total_usage_limit": total_usage_limit,
                 "usage_shares": usage_shares,
