@@ -221,7 +221,8 @@ class CredentialDB:
                           SELECT MAX(u2.id) FROM usage_snapshots u2
                           WHERE u2.client_id = c.client_id
                       )
-                    ORDER BY (u.usage_limit - u.current_usage) DESC
+                    ORDER BY (u.usage_limit - u.current_usage) DESC,
+                             c.last_seen_at DESC
                     LIMIT 1
                     """,
                     (exclude_auth_hash,),
@@ -237,7 +238,8 @@ class CredentialDB:
                           SELECT MAX(u2.id) FROM usage_snapshots u2
                           WHERE u2.client_id = c.client_id
                       )
-                    ORDER BY (u.usage_limit - u.current_usage) DESC
+                    ORDER BY (u.usage_limit - u.current_usage) DESC,
+                             c.last_seen_at DESC
                     LIMIT 1
                     """
                 ).fetchone()
