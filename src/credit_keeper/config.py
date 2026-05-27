@@ -52,6 +52,8 @@ class CredentialPoolConfig:
     extract_headers: list[str] = field(default_factory=lambda: ["Authorization"])
     auto_rotate: bool = True
     refresh_token_header: str = ""
+    warning_threshold_pct: float = 0.0
+    warning_blend_ratio: float = 0.0
 
 
 @dataclass
@@ -264,6 +266,16 @@ def load_config(path: str | Path) -> Config:
         extract_headers = pool_raw.get("extract_headers", ["Authorization"])
         auto_rotate = pool_raw.get("auto_rotate", True)
         refresh_token_header = pool_raw.get("refresh_token_header", "")
+        warning_threshold_pct = pool_raw.get("warning_threshold_pct", 0.0)
+        warning_blend_ratio = pool_raw.get("warning_blend_ratio", 0.0)
+        if not isinstance(warning_threshold_pct, (int, float)) or isinstance(warning_threshold_pct, bool):
+            raise ConfigError("'credential_pool.warning_threshold_pct' must be a number")
+        if not isinstance(warning_blend_ratio, (int, float)) or isinstance(warning_blend_ratio, bool):
+            raise ConfigError("'credential_pool.warning_blend_ratio' must be a number")
+        if not (0 <= warning_threshold_pct <= 100):
+            raise ConfigError("'credential_pool.warning_threshold_pct' must be between 0 and 100")
+        if not (0 <= warning_blend_ratio <= 1):
+            raise ConfigError("'credential_pool.warning_blend_ratio' must be between 0 and 1")
         credential_pool = CredentialPoolConfig(
             enabled=enabled,
             intercept_hosts=intercept_hosts,
@@ -272,6 +284,8 @@ def load_config(path: str | Path) -> Config:
             extract_headers=extract_headers,
             auto_rotate=auto_rotate,
             refresh_token_header=refresh_token_header,
+            warning_threshold_pct=float(warning_threshold_pct),
+            warning_blend_ratio=float(warning_blend_ratio),
         )
 
     return Config(rules=rules, credential_pool=credential_pool)

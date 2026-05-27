@@ -207,6 +207,31 @@ class CredentialDB:
             return False
         return bool(row[0])
 
+    def is_in_warning(self, client_id: str, threshold_pct: float) -> bool:
+        """Return True when the latest usage snapshot for client_id shows
+        remaining/limit*100 < threshold_pct. Returns False for empty
+        client_id, non-positive threshold, missing snapshot, or non-positive
+        usage_limit.
+        """
+        if not client_id or threshold_pct <= 0:
+            return False
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT current_usage, usage_limit FROM usage_snapshots
+                WHERE client_id = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (client_id,),
+            ).fetchone()
+        if row is None:
+            return False
+        current_usage, usage_limit = row
+        if not usage_limit or usage_limit <= 0:
+            return False
+        remaining_pct = (usage_limit - current_usage) * 100.0 / usage_limit
+        return remaining_pct < threshold_pct
+
     def get_available_credential(
         self, exclude_auth_hash: str | None = None
     ) -> tuple[str, str, str] | None:
@@ -350,6 +375,40 @@ class CredentialDB:
                 "SELECT COUNT(*) FROM credentials WHERE is_dead = 1"
             ).fetchone()
         return row[0] if row else 0
+
+    def get_warning_count(self, threshold_pct: float) -> int:
+        """Number of distinct client_ids whose latest snapshot is in warning."""
+        if threshold_pct <= 0:
+            return 0
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT u.client_id, u.current_usage, u.usage_limit
+                    FROM usage_snapshots u
+                    INNER JOIN (
+                        SELECT client_id, MAX(id) AS max_id
+                        FROM usage_snapshots
+                        GROUP BY client_id
+                    ) latest ON u.id = latest.max_id
+                    WHERE u.usage_limit > 0
+                      AND ((u.usage_limit - u.current_usage) * 100.0 / u.usage_limit) < ?
+                )
+                """,
+                (threshold_pct,),
+            ).fetchone()
+        return row[0] if row else 0
+
+    def get_client_id_by_auth_hash(self, auth_hash: str) -> str | None:
+        """Return the client_id for a credential identified by auth_hash, or None."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT client_id FROM credentials WHERE auth_hash = ?",
+                (auth_hash,),
+            ).fetchone()
+        if row is None:
+            return None
+        return row[0]
 
     def get_usage_history(self, client_id: str, limit: int = 100) -> list[dict]:
         """Return usage snapshots for a given client_id, newest first."""

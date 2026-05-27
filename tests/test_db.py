@@ -243,3 +243,104 @@ def test_update_refresh_token(tmp_path: Path) -> None:
             (auth_hash,),
         ).fetchone()
     assert row[0] == "new-refresh-token"
+
+
+# --- Tests for is_in_warning, get_warning_count, get_client_id_by_auth_hash ---
+
+def _insert_snapshot(db: CredentialDB, client_id: str, current_usage: int, usage_limit: int) -> None:
+    db.insert_usage_snapshot(
+        client_id=client_id,
+        current_usage=current_usage,
+        usage_limit=usage_limit,
+        resource_type="api_calls",
+        display_name="API Calls",
+        unit="calls",
+        days_until_reset=15,
+        next_date_reset=None,
+        raw_json="{}",
+    )
+
+
+def test_is_in_warning_below_threshold(tmp_path: Path) -> None:
+    """Snapshot with current_usage=1850, usage_limit=2000 → 7.5% remaining < 10% → True."""
+    db = CredentialDB(tmp_path / "test.db")
+    _insert_snapshot(db, "c1", current_usage=1850, usage_limit=2000)
+    assert db.is_in_warning("c1", 10.0) is True
+
+
+def test_is_in_warning_above_threshold(tmp_path: Path) -> None:
+    """Snapshot with current_usage=500, usage_limit=2000 → 75% remaining > 10% → False."""
+    db = CredentialDB(tmp_path / "test.db")
+    _insert_snapshot(db, "c1", current_usage=500, usage_limit=2000)
+    assert db.is_in_warning("c1", 10.0) is False
+
+
+def test_is_in_warning_empty_client_id(tmp_path: Path) -> None:
+    """Empty client_id always returns False."""
+    db = CredentialDB(tmp_path / "test.db")
+    assert db.is_in_warning("", 10.0) is False
+
+
+def test_is_in_warning_zero_threshold(tmp_path: Path) -> None:
+    """threshold_pct=0 means feature is off → always False."""
+    db = CredentialDB(tmp_path / "test.db")
+    _insert_snapshot(db, "c1", current_usage=1999, usage_limit=2000)
+    assert db.is_in_warning("c1", 0) is False
+
+
+def test_is_in_warning_no_snapshot(tmp_path: Path) -> None:
+    """No snapshot for c2 → False."""
+    db = CredentialDB(tmp_path / "test.db")
+    assert db.is_in_warning("c2", 10.0) is False
+
+
+def test_is_in_warning_zero_limit(tmp_path: Path) -> None:
+    """Snapshot with usage_limit=0 → False (avoid divide-by-zero)."""
+    db = CredentialDB(tmp_path / "test.db")
+    _insert_snapshot(db, "c1", current_usage=0, usage_limit=0)
+    assert db.is_in_warning("c1", 10.0) is False
+
+
+def test_is_in_warning_uses_latest_snapshot(tmp_path: Path) -> None:
+    """When two snapshots exist, only the latest (higher id) is used."""
+    db = CredentialDB(tmp_path / "test.db")
+    # Older snapshot: near depletion (would be in warning)
+    _insert_snapshot(db, "c1", current_usage=1950, usage_limit=2000)
+    # Newer snapshot: plenty remaining (not in warning)
+    _insert_snapshot(db, "c1", current_usage=500, usage_limit=2000)
+    assert db.is_in_warning("c1", 10.0) is False
+
+
+def test_get_warning_count_zero_threshold(tmp_path: Path) -> None:
+    """threshold_pct <= 0 → returns 0 (feature off)."""
+    db = CredentialDB(tmp_path / "test.db")
+    _insert_snapshot(db, "c1", current_usage=1990, usage_limit=2000)
+    assert db.get_warning_count(0) == 0
+    assert db.get_warning_count(-5.0) == 0
+
+
+def test_get_warning_count_counts_distinct_clients(tmp_path: Path) -> None:
+    """Three clients: two in warning, one not → get_warning_count(10.0) == 2."""
+    db = CredentialDB(tmp_path / "test.db")
+    # c1: 1850/2000 used → 7.5% remaining → in warning
+    _insert_snapshot(db, "c1", current_usage=1850, usage_limit=2000)
+    # c2: 1900/2000 used → 5% remaining → in warning
+    _insert_snapshot(db, "c2", current_usage=1900, usage_limit=2000)
+    # c3: 500/2000 used → 75% remaining → NOT in warning
+    _insert_snapshot(db, "c3", current_usage=500, usage_limit=2000)
+    assert db.get_warning_count(10.0) == 2
+
+
+def test_get_client_id_by_auth_hash_found(tmp_path: Path) -> None:
+    """Upsert a credential and look it up by auth_hash."""
+    db = CredentialDB(tmp_path / "test.db")
+    auth_hash = db.upsert_credential("user42", "Bearer token42", "Plan")
+    result = db.get_client_id_by_auth_hash(auth_hash)
+    assert result == "user42"
+
+
+def test_get_client_id_by_auth_hash_missing(tmp_path: Path) -> None:
+    """Unknown auth_hash returns None."""
+    db = CredentialDB(tmp_path / "test.db")
+    result = db.get_client_id_by_auth_hash("nonexistent-hash-value")
+    assert result is None

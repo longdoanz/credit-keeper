@@ -8,6 +8,22 @@ Format dựa trên [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Đợt cập nhật chính: bổ sung hỗ trợ **kiro-cli** (Amazon Q CLI fork dùng AWS SDK protocol) và cải thiện độ tin cậy của rotation.
 
+### Added — Warning-mode credit blending
+
+- **Config**: `warning_threshold_pct` và `warning_blend_ratio` trong `credential_pool`.
+  Khi remaining của user < threshold_pct, addon tự động trộn owner + pool theo
+  tỷ lệ blend_ratio (vd `0.2` = 1/5 request dùng owner, 4/5 dùng pool).
+  Mục đích: kéo dài tuổi thọ credit của user gần cạn.
+  Backward-compat: cả 2 default `0` → feature tắt.
+- **DB**: `is_in_warning(client_id, threshold_pct)`, `get_warning_count(threshold_pct)`,
+  `get_client_id_by_auth_hash(auth_hash)`. Không thêm column/table — warning state
+  compute on-the-fly từ `usage_snapshots`.
+- **Addon**: branch mới trong `request()` đặt sau exhausted check. Counter in-memory
+  `dict[client_id, int]` (không persist). Modulo arithmetic đảm bảo tỷ lệ chính xác
+  dài hạn.
+- **Web UI**: Dashboard có thêm card "Warning" (màu vàng). Credentials table có badge
+  "Warning" với độ ưu tiên Dead > Exhausted > Warning > Active.
+
 ### Added
 
 - **Match request theo `x-amz-target` header** cho client dùng AWS SDK protocol (kiro-cli).

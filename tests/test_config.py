@@ -322,3 +322,77 @@ def test_credential_pool_refresh_token_header(tmp_path: Path) -> None:
     cfg = load_config(cfg_path)
     assert cfg.credential_pool is not None
     assert cfg.credential_pool.refresh_token_header == "X-Refresh-Token"
+
+
+def test_credential_pool_parses_warning_fields(tmp_path: Path) -> None:
+    """warning_threshold_pct and warning_blend_ratio should be read from YAML."""
+    cfg_path = _write(
+        tmp_path,
+        """
+        rules: []
+        credential_pool:
+          enabled: true
+          intercept_hosts:
+            - "example.com"
+          warning_threshold_pct: 20.0
+          warning_blend_ratio: 0.8
+        """,
+    )
+    cfg = load_config(cfg_path)
+    assert cfg.credential_pool is not None
+    assert cfg.credential_pool.warning_threshold_pct == 20.0
+    assert cfg.credential_pool.warning_blend_ratio == 0.8
+
+
+def test_credential_pool_warning_fields_default_zero(tmp_path: Path) -> None:
+    """When warning fields are absent, both should default to 0.0."""
+    cfg_path = _write(
+        tmp_path,
+        """
+        rules: []
+        credential_pool:
+          enabled: true
+          intercept_hosts:
+            - "example.com"
+        """,
+    )
+    cfg = load_config(cfg_path)
+    assert cfg.credential_pool is not None
+    assert cfg.credential_pool.warning_threshold_pct == 0.0
+    assert cfg.credential_pool.warning_blend_ratio == 0.0
+
+
+def test_warning_threshold_pct_out_of_range(tmp_path: Path) -> None:
+    """warning_threshold_pct of 150 should raise ConfigError."""
+    cfg_path = _write(
+        tmp_path,
+        """
+        rules: []
+        credential_pool:
+          enabled: true
+          intercept_hosts:
+            - "example.com"
+          warning_threshold_pct: 150
+        """,
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(cfg_path)
+    assert "warning_threshold_pct" in str(excinfo.value)
+
+
+def test_warning_blend_ratio_out_of_range(tmp_path: Path) -> None:
+    """warning_blend_ratio of 1.5 should raise ConfigError."""
+    cfg_path = _write(
+        tmp_path,
+        """
+        rules: []
+        credential_pool:
+          enabled: true
+          intercept_hosts:
+            - "example.com"
+          warning_blend_ratio: 1.5
+        """,
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(cfg_path)
+    assert "warning_blend_ratio" in str(excinfo.value)

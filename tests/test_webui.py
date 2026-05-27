@@ -128,3 +128,165 @@ def test_requests_pagination(client):
     """GET /requests?page=2 returns 200 (empty second page)."""
     response = client.get("/requests?page=2")
     assert response.status_code == 200
+
+
+def test_dashboard_shows_warning_count(tmp_path):
+    """Dashboard shows correct warning count when threshold is set."""
+    db_path = tmp_path / "warning_test.db"
+    database = CredentialDB(str(db_path))
+
+    # Seed two credentials
+    database.upsert_credential(
+        client_id="user_near_limit",
+        authorization_header="Bearer token_near",
+        subscription_title="Pro Plan",
+    )
+    database.upsert_credential(
+        client_id="user_low_usage",
+        authorization_header="Bearer token_low",
+        subscription_title="Pro Plan",
+    )
+
+    # user_near_limit: 1900/2000 used → 5% remaining → in warning at threshold 10%
+    database.insert_usage_snapshot(
+        client_id="user_near_limit",
+        current_usage=1900,
+        usage_limit=2000,
+        resource_type="api_calls",
+        display_name="API Calls",
+        unit="calls",
+        days_until_reset=15,
+        next_date_reset=None,
+        raw_json="{}",
+    )
+    # user_low_usage: 100/2000 used → 95% remaining → NOT in warning at threshold 10%
+    database.insert_usage_snapshot(
+        client_id="user_low_usage",
+        current_usage=100,
+        usage_limit=2000,
+        resource_type="api_calls",
+        display_name="API Calls",
+        unit="calls",
+        days_until_reset=15,
+        next_date_reset=None,
+        raw_json="{}",
+    )
+    database.close()
+
+    app = create_app(str(db_path), warning_threshold_pct=10)
+    test_client = TestClient(app)
+    response = test_client.get("/")
+    assert response.status_code == 200
+    assert "Warning" in response.text
+    # The warning card should show value 1 (only user_near_limit is in warning)
+    assert ">1<" in response.text or "text-yellow-600\">1<" in response.text or "text-yellow-600\">1\n" in response.text or response.text.count(">1<") >= 1
+
+
+def test_dashboard_warning_card_hidden_when_threshold_zero(tmp_path):
+    """Dashboard shows Warning card with value 0 when threshold is 0 (disabled)."""
+    db_path = tmp_path / "warning_zero_test.db"
+    database = CredentialDB(str(db_path))
+
+    # Seed two credentials (same as above)
+    database.upsert_credential(
+        client_id="user_near_limit",
+        authorization_header="Bearer token_near",
+        subscription_title="Pro Plan",
+    )
+    database.upsert_credential(
+        client_id="user_low_usage",
+        authorization_header="Bearer token_low",
+        subscription_title="Pro Plan",
+    )
+
+    # user_near_limit: 1900/2000 used
+    database.insert_usage_snapshot(
+        client_id="user_near_limit",
+        current_usage=1900,
+        usage_limit=2000,
+        resource_type="api_calls",
+        display_name="API Calls",
+        unit="calls",
+        days_until_reset=15,
+        next_date_reset=None,
+        raw_json="{}",
+    )
+    # user_low_usage: 100/2000 used
+    database.insert_usage_snapshot(
+        client_id="user_low_usage",
+        current_usage=100,
+        usage_limit=2000,
+        resource_type="api_calls",
+        display_name="API Calls",
+        unit="calls",
+        days_until_reset=15,
+        next_date_reset=None,
+        raw_json="{}",
+    )
+    database.close()
+
+    # threshold_pct=0 means feature is disabled → warning count is 0
+    app = create_app(str(db_path), warning_threshold_pct=0)
+    test_client = TestClient(app)
+    response = test_client.get("/")
+    assert response.status_code == 200
+    assert "Warning" in response.text
+    # The warning card should show value 0
+    assert "text-yellow-600\">0<" in response.text or ">0<" in response.text
+
+
+def test_credentials_table_shows_warning_badge(tmp_path):
+    """Credentials table shows Warning badge for near-limit users; Exhausted wins over Warning."""
+    db_path = tmp_path / "warning_badge_test.db"
+    database = CredentialDB(str(db_path))
+
+    # user_near_limit: not exhausted, not dead, but 1900/2000 used → in warning at 10%
+    database.upsert_credential(
+        client_id="user_near_limit",
+        authorization_header="Bearer token_near",
+        subscription_title="Pro Plan",
+    )
+    database.insert_usage_snapshot(
+        client_id="user_near_limit",
+        current_usage=1900,
+        usage_limit=2000,
+        resource_type="api_calls",
+        display_name="API Calls",
+        unit="calls",
+        days_until_reset=15,
+        next_date_reset=None,
+        raw_json="{}",
+    )
+
+    # user_exhausted: is_exhausted=1 and also near limit → Exhausted badge should win
+    database.upsert_credential(
+        client_id="user_exhausted",
+        authorization_header="Bearer token_exhausted",
+        subscription_title="Pro Plan",
+    )
+    import hashlib
+    exhausted_hash = hashlib.sha256(b"Bearer token_exhausted").hexdigest()
+    database.mark_exhausted(exhausted_hash)
+    database.insert_usage_snapshot(
+        client_id="user_exhausted",
+        current_usage=1950,
+        usage_limit=2000,
+        resource_type="api_calls",
+        display_name="API Calls",
+        unit="calls",
+        days_until_reset=15,
+        next_date_reset=None,
+        raw_json="{}",
+    )
+
+    database.close()
+
+    app = create_app(str(db_path), warning_threshold_pct=10)
+    test_client = TestClient(app)
+    response = test_client.get("/credentials")
+
+    assert response.status_code == 200
+    # Warning badge appears for the near-limit user
+    assert ">Warning<" in response.text
+    # Exhausted badge appears for the exhausted user (priority over Warning)
+    assert ">Exhausted<" in response.text

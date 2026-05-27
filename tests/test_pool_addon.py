@@ -410,3 +410,259 @@ def test_refresh_token_extraction(tmp_path: Path) -> None:
         ).fetchone()
     assert row is not None
     assert row[0] == "my-refresh-token-123"
+
+
+# ---------------------------------------------------------------------------
+# Helpers for warning-blend tests
+# ---------------------------------------------------------------------------
+
+def _make_blend_config(
+    warning_blend_ratio: float = 0.2,
+    warning_threshold_pct: float = 10.0,
+    auto_rotate: bool = True,
+) -> CredentialPoolConfig:
+    return CredentialPoolConfig(
+        enabled=True,
+        intercept_hosts=["q.us-east-1.amazonaws.com"],
+        usage_path="/getUsageLimits",
+        auto_rotate=auto_rotate,
+        extract_headers=["Authorization"],
+        warning_blend_ratio=warning_blend_ratio,
+        warning_threshold_pct=warning_threshold_pct,
+    )
+
+
+def _seed_warning_credential(
+    db: CredentialDB,
+    client_id: str = "c1",
+    auth: str = "Bearer owner_token",
+    current_usage: int = 1900,
+    usage_limit: int = 2000,
+) -> str:
+    """Insert a credential + usage snapshot indicating warning state. Returns auth_hash."""
+    auth_hash = db.upsert_credential(client_id, auth, "Plan W")
+    db.insert_usage_snapshot(
+        client_id=client_id,
+        current_usage=current_usage,
+        usage_limit=usage_limit,
+        resource_type="api_calls",
+        display_name="API Calls",
+        unit="calls",
+        days_until_reset=15,
+        next_date_reset=1700000000.0,
+        raw_json="{}",
+    )
+    return auth_hash
+
+
+# ---------------------------------------------------------------------------
+# Warning-blend tests
+# ---------------------------------------------------------------------------
+
+def test_warning_blend_rotates_when_not_owner_turn(tmp_path: Path) -> None:
+    """Counter=1, every_nth=5 (ratio=0.2); 1%5!=0 → header should rotate."""
+    db = CredentialDB(tmp_path / "test.db")
+    config = _make_blend_config(warning_blend_ratio=0.2, warning_threshold_pct=10.0)
+    addon = CredentialPoolAddon(config, db)
+
+    # Seed owner credential in warning (1900/2000 → 5% remaining < 10%)
+    owner_auth = "Bearer owner_token"
+    _seed_warning_credential(db, client_id="c1", auth=owner_auth, current_usage=1900, usage_limit=2000)
+
+    # Seed a second available credential in the pool
+    pool_auth = "Bearer pool_token"
+    db.upsert_credential("c2", pool_auth, "Plan P")
+    db.insert_usage_snapshot(
+        client_id="c2", current_usage=100, usage_limit=2000,
+        resource_type="api_calls", display_name="API Calls", unit="calls",
+        days_until_reset=15, next_date_reset=1700000000.0, raw_json="{}",
+    )
+
+    flow = _flow_for(auth=owner_auth)
+    addon.request(flow)
+
+    # Counter becomes 1; 1 % 5 != 0 → should have rotated to pool credential
+    assert flow.request.headers["Authorization"] == pool_auth
+
+
+def test_warning_blend_skips_rotation_on_owner_turn(tmp_path: Path) -> None:
+    """5th call (counter=5, 5%5==0) should NOT rotate."""
+    db = CredentialDB(tmp_path / "test.db")
+    config = _make_blend_config(warning_blend_ratio=0.2, warning_threshold_pct=10.0)
+    addon = CredentialPoolAddon(config, db)
+
+    owner_auth = "Bearer owner_token"
+    _seed_warning_credential(db, client_id="c1", auth=owner_auth, current_usage=1900, usage_limit=2000)
+
+    pool_auth = "Bearer pool_token"
+    db.upsert_credential("c2", pool_auth, "Plan P")
+    db.insert_usage_snapshot(
+        client_id="c2", current_usage=100, usage_limit=2000,
+        resource_type="api_calls", display_name="API Calls", unit="calls",
+        days_until_reset=15, next_date_reset=1700000000.0, raw_json="{}",
+    )
+
+    # Make 4 requests (counter 1-4 → all rotate)
+    for _ in range(4):
+        flow = _flow_for(auth=owner_auth)
+        addon.request(flow)
+
+    # 5th request: counter=5, 5%5==0 → owner turn, no rotation
+    flow5 = _flow_for(auth=owner_auth)
+    addon.request(flow5)
+
+    assert flow5.request.headers["Authorization"] == owner_auth
+
+
+def test_warning_blend_inactive_when_above_threshold(tmp_path: Path) -> None:
+    """Snapshot at 500/2000 → 75% remaining, above 10% threshold → no warning, no rotation."""
+    db = CredentialDB(tmp_path / "test.db")
+    config = _make_blend_config(warning_blend_ratio=0.2, warning_threshold_pct=10.0)
+    addon = CredentialPoolAddon(config, db)
+
+    owner_auth = "Bearer owner_token"
+    _seed_warning_credential(db, client_id="c1", auth=owner_auth, current_usage=500, usage_limit=2000)
+
+    pool_auth = "Bearer pool_token"
+    db.upsert_credential("c2", pool_auth, "Plan P")
+
+    flow = _flow_for(auth=owner_auth)
+    addon.request(flow)
+
+    # Not in warning → no rotation, no counter increment
+    assert flow.request.headers["Authorization"] == owner_auth
+    assert "c1" not in addon._owner_counter
+
+
+def test_warning_blend_inactive_when_feature_disabled(tmp_path: Path) -> None:
+    """warning_blend_ratio=0.0 disables the feature entirely."""
+    db = CredentialDB(tmp_path / "test.db")
+    config = _make_blend_config(warning_blend_ratio=0.0, warning_threshold_pct=10.0)
+    addon = CredentialPoolAddon(config, db)
+
+    owner_auth = "Bearer owner_token"
+    _seed_warning_credential(db, client_id="c1", auth=owner_auth, current_usage=1900, usage_limit=2000)
+
+    pool_auth = "Bearer pool_token"
+    db.upsert_credential("c2", pool_auth, "Plan P")
+
+    flow = _flow_for(auth=owner_auth)
+    addon.request(flow)
+
+    # Feature disabled → no rotation, counter empty
+    assert flow.request.headers["Authorization"] == owner_auth
+    assert addon._owner_counter == {}
+
+
+def test_warning_blend_unknown_client_id(tmp_path: Path) -> None:
+    """auth_hash not in credentials → get_client_id_by_auth_hash returns None → branch skipped."""
+    db = CredentialDB(tmp_path / "test.db")
+    config = _make_blend_config(warning_blend_ratio=0.2, warning_threshold_pct=10.0)
+    addon = CredentialPoolAddon(config, db)
+
+    # No credential inserted for this auth header
+    unknown_auth = "Bearer unknown_token"
+
+    flow = _flow_for(auth=unknown_auth)
+    addon.request(flow)
+
+    # Counter should be empty and header unchanged
+    assert addon._owner_counter == {}
+    assert flow.request.headers["Authorization"] == unknown_auth
+
+
+def test_warning_blend_exhausted_takes_priority(tmp_path: Path) -> None:
+    """Exhausted credential gets rotated by exhausted logic; warning branch must not tick counter."""
+    db = CredentialDB(tmp_path / "test.db")
+    config = _make_blend_config(warning_blend_ratio=0.2, warning_threshold_pct=10.0, auto_rotate=True)
+    addon = CredentialPoolAddon(config, db)
+
+    # Owner credential is exhausted AND in warning
+    owner_auth = "Bearer owner_token"
+    auth_hash = _seed_warning_credential(db, client_id="c1", auth=owner_auth, current_usage=1900, usage_limit=2000)
+    db.mark_exhausted(auth_hash)
+
+    pool_auth = "Bearer pool_token"
+    db.upsert_credential("c2", pool_auth, "Plan P")
+    db.insert_usage_snapshot(
+        client_id="c2", current_usage=100, usage_limit=2000,
+        resource_type="api_calls", display_name="API Calls", unit="calls",
+        days_until_reset=15, next_date_reset=1700000000.0, raw_json="{}",
+    )
+
+    flow = _flow_for(auth=owner_auth)
+    addon.request(flow)
+
+    # Exhausted rotation fires, header changes
+    assert flow.request.headers["Authorization"] == pool_auth
+    # Warning branch should NOT have incremented the counter
+    assert addon._owner_counter.get("c1", 0) == 0
+
+
+def test_warning_blend_pool_empty_fallthrough(tmp_path: Path, caplog) -> None:
+    """Pool empty when blend says rotate → header stays unchanged, WARNING log emitted."""
+    import logging
+
+    db = CredentialDB(tmp_path / "test.db")
+    config = _make_blend_config(warning_blend_ratio=0.2, warning_threshold_pct=10.0)
+    addon = CredentialPoolAddon(config, db)
+
+    # Only one credential (in warning), no pool available
+    owner_auth = "Bearer owner_token"
+    _seed_warning_credential(db, client_id="c1", auth=owner_auth, current_usage=1900, usage_limit=2000)
+
+    flow = _flow_for(auth=owner_auth)
+    with caplog.at_level(logging.WARNING):
+        addon.request(flow)
+
+    # Counter ticked but header unchanged (fell through)
+    assert flow.request.headers["Authorization"] == owner_auth
+    assert addon._owner_counter.get("c1", 0) == 1
+    assert "falling through with owner" in caplog.text
+
+
+def test_warning_blend_counter_persists_across_requests(tmp_path: Path) -> None:
+    """Counter increments on each request while client is in warning."""
+    db = CredentialDB(tmp_path / "test.db")
+    config = _make_blend_config(warning_blend_ratio=0.2, warning_threshold_pct=10.0)
+    addon = CredentialPoolAddon(config, db)
+
+    owner_auth = "Bearer owner_token"
+    _seed_warning_credential(db, client_id="c1", auth=owner_auth, current_usage=1900, usage_limit=2000)
+
+    # No second credential so blend falls through each time (counter still ticks)
+    for _ in range(3):
+        flow = _flow_for(auth=owner_auth)
+        addon.request(flow)
+
+    assert addon._owner_counter.get("c1") == 3
+
+
+def test_warning_blend_counter_shared_across_refreshed_tokens(tmp_path: Path) -> None:
+    """Two auth_hashes for same client_id share the same counter slot."""
+    db = CredentialDB(tmp_path / "test.db")
+    config = _make_blend_config(warning_blend_ratio=0.2, warning_threshold_pct=10.0)
+    addon = CredentialPoolAddon(config, db)
+
+    # Insert two credentials sharing client_id "c1" (simulating token refresh)
+    auth1 = "Bearer token_v1"
+    auth2 = "Bearer token_v2"
+    db.upsert_credential("c1", auth1, "Plan W")
+    db.upsert_credential("c1", auth2, "Plan W")
+    # Insert a single usage snapshot under client_id "c1" indicating warning
+    db.insert_usage_snapshot(
+        client_id="c1", current_usage=1900, usage_limit=2000,
+        resource_type="api_calls", display_name="API Calls", unit="calls",
+        days_until_reset=15, next_date_reset=1700000000.0, raw_json="{}",
+    )
+
+    # Request with first token
+    flow1 = _flow_for(auth=auth1)
+    addon.request(flow1)
+
+    # Request with second token
+    flow2 = _flow_for(auth=auth2)
+    addon.request(flow2)
+
+    # Counter for "c1" should be 2 (both requests share the same slot)
+    assert addon._owner_counter.get("c1") == 2

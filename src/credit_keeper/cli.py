@@ -180,7 +180,10 @@ def main(argv: list[str] | None = None) -> int:
 
             from .webui.app import create_app
 
-            webui_app = create_app(str(args.db))
+            webui_threshold = 0.0
+            if addon.config.credential_pool is not None:
+                webui_threshold = addon.config.credential_pool.warning_threshold_pct
+            webui_app = create_app(str(args.db), warning_threshold_pct=webui_threshold)
             uvicorn_config = uvicorn.Config(
                 webui_app,
                 host=args.listen_host,

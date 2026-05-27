@@ -18,6 +18,7 @@ class CredentialPoolAddon:
     def __init__(self, config: CredentialPoolConfig, db: CredentialDB) -> None:
         self.config = config
         self.db = db
+        self._owner_counter: dict[str, int] = {}
 
     def done(self) -> None:  # type: ignore[no-untyped-def]
         """Called by mitmproxy on shutdown. Clean up DB resources."""
@@ -85,6 +86,55 @@ class CredentialPoolAddon:
                         "credit-keeper: credential %s is exhausted but no available "
                         "credential in pool to rotate to",
                         auth_hash[:8],
+                    )
+
+        # Warning-mode blending: only when feature is enabled, the credential
+        # isn't already being rotated for exhaustion, and the owner is in
+        # warning state. Identified by client_id (shared across all of an
+        # owner's refreshed tokens).
+        if (
+            self.config.warning_blend_ratio > 0
+            and not self.db.is_exhausted(auth_hash)
+        ):
+            client_id = self.db.get_client_id_by_auth_hash(auth_hash) or ""
+            if client_id and self.db.is_in_warning(
+                client_id, self.config.warning_threshold_pct
+            ):
+                count = self._owner_counter.get(client_id, 0) + 1
+                self._owner_counter[client_id] = count
+                every_nth = max(1, round(1 / self.config.warning_blend_ratio))
+                if count % every_nth != 0:
+                    # Pool turn: rotate to another credential.
+                    available = self.db.get_best_available_credential(
+                        exclude_auth_hash=auth_hash
+                    )
+                    if available:
+                        new_header, new_hash, _ = available
+                        flow.request.headers[header_name] = new_header
+                        flow.metadata["ck_auth_hash"] = new_hash
+                        flow.metadata["ck_auth_header"] = new_header
+                        logger.info(
+                            "credit-keeper: warning-blend client_id=%s "
+                            "(counter=%d, every_nth=%d) rotated %s -> %s",
+                            client_id,
+                            count,
+                            every_nth,
+                            auth_hash[:8],
+                            new_hash[:8],
+                        )
+                    else:
+                        logger.warning(
+                            "credit-keeper: warning-blend client_id=%s would "
+                            "rotate but pool empty; falling through with owner",
+                            client_id,
+                        )
+                else:
+                    logger.debug(
+                        "credit-keeper: warning-blend client_id=%s owner-turn "
+                        "(counter=%d, every_nth=%d)",
+                        client_id,
+                        count,
+                        every_nth,
                     )
 
     def response(self, flow) -> None:  # type: ignore[no-untyped-def]

@@ -21,3 +21,7 @@ credential_pool:
   usage_amz_target: "AmazonCodeWhispererService.GetUsageLimits"  # AWS SDK-style: dùng cho kiro-cli
   extract_headers: ["Authorization"]
   auto_rotate: true                         # Tự rotate khi credential hết 50/50
+  # Warning-mode blending: khi remaining < threshold_pct, trộn owner + pool
+  # theo blend_ratio để kéo dài tuổi thọ credit. Đặt cả 2 về 0 để tắt.
+  warning_threshold_pct: 10.0    # vào warning khi remaining < 10% usage_limit
+  warning_blend_ratio: 0.2       # 20% request dùng owner, 80% dùng pool

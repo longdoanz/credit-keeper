@@ -14,7 +14,7 @@ from ..db import CredentialDB
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
-def create_app(db_path: str) -> FastAPI:
+def create_app(db_path: str, warning_threshold_pct: float = 0.0) -> FastAPI:
     """Create and return a configured FastAPI application."""
     app = FastAPI(title="credit-keeper Web UI")
     db = CredentialDB(db_path)
@@ -25,7 +25,10 @@ def create_app(db_path: str) -> FastAPI:
         total = db.get_credential_count()
         exhausted = db.get_exhausted_count()
         dead = db.get_dead_count()
-        active = total - exhausted - dead
+        warning = db.get_warning_count(warning_threshold_pct)
+        # Warning is per-client and Exhausted/Dead are per-credential; clamp to
+        # avoid negative when buckets overlap.
+        active = max(0, total - exhausted - dead - warning)
 
         # Compute total usage summary from latest snapshots
         latest_usage = db.get_latest_usage_per_credential()
@@ -56,6 +59,7 @@ def create_app(db_path: str) -> FastAPI:
             {
                 "total": total,
                 "active": active,
+                "warning": warning,
                 "exhausted": exhausted,
                 "dead": dead,
                 "total_current_usage": total_current_usage,
@@ -72,6 +76,10 @@ def create_app(db_path: str) -> FastAPI:
         total_current_usage = sum(
             u.get("current_usage", 0) or 0 for u in latest_usage.values()
         )
+        warning_client_ids = {
+            cid for cid in latest_usage.keys()
+            if db.is_in_warning(cid, warning_threshold_pct)
+        }
         return templates.TemplateResponse(
             request,
             "credentials.html",
@@ -79,6 +87,7 @@ def create_app(db_path: str) -> FastAPI:
                 "credentials": creds,
                 "latest_usage": latest_usage,
                 "total_current_usage": total_current_usage,
+                "warning_client_ids": warning_client_ids,
             },
         )
 
