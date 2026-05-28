@@ -1,0 +1,23 @@
+# ============================================================================
+# credit-keeper config cho Kiro IDE
+# Discovered: 2026-05-26
+#
+# Chạy:
+#   uv run credit-keeper -c config.yaml --listen-host 0.0.0.0 -p 8080 --webui-port 9090
+#
+# Lưu ý:
+#   - --listen-host 0.0.0.0 để các máy khác trong LAN/VPN truy cập được
+#   - Nếu chỉ test 1 máy, đổi sang 127.0.0.1
+# ============================================================================
+
+rules: []
+
+credential_pool:
+  enabled: true
+  intercept_hosts:
+    - "q.us-east-1.amazonaws.com"           # Kiro AI API (chat, generate, usage)
+    # - "prod.us-east-1.auth.desktop.kiro.dev"  # bật để pool cả refresh token (nâng cao)
+  usage_path: "/getUsageLimits"             # REST-style: dùng cho Kiro IDE
+  usage_amz_target: "AmazonCodeWhispererService.GetUsageLimits"  # AWS SDK-style: dùng cho kiro-cli
+  extract_headers: ["Authorization"]
+  auto_rotate: true                         # Tự rotate khi credential hết 50/50
